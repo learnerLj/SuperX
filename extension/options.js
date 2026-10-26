@@ -35,6 +35,7 @@
   const oauthControlIds=["oauth-login","oauth-cancel","oauth-logout","oauth-remember","oauth-copy-code","oauth-model","oauth-reasoning-effort","oauth-refresh-models"];
   const isBuild = () => $("provider").value === "build";
   const isOAuth = () => $("provider").value === "oauth";
+  const isNative = () => $("provider").value === "x-native";
   const isAPI = () => $("provider").value === "api";
   function oauthErrorKey(code){return ({OAUTH_ACCESS_DENIED:"oauth.denied",OAUTH_AUTHORIZATION_DENIED:"oauth.denied",OAUTH_AUTHORIZATION_EXPIRED:"oauth.expired",OAUTH_DEVICE_EXPIRED:"oauth.expired",OAUTH_EXPIRED_TOKEN:"oauth.expired",OAUTH_NETWORK_ERROR:"oauth.networkError",OAUTH_AUTH_UNAVAILABLE:"oauth.networkError",OAUTH_NETWORK:"oauth.networkError",OAUTH_STORAGE_ERROR:"oauth.storageError",OAUTH_REAUTH_REQUIRED:"oauth.reauthRequired",OAUTH_REFRESH_UNCERTAIN:"oauth.reauthRequired",OAUTH_ACCOUNT_CHANGED:"oauth.reauthRequired",OAUTH_NOT_CONNECTED:"oauth.needsLogin",OAUTH_LOGIN_REQUIRED:"oauth.needsLogin",OAUTH_CANCELLED:"oauth.canceled",OAUTH_CATALOG_ERROR:"oauth.catalogUnavailable",OAUTH_CATALOG_FAILED:"oauth.catalogUnavailable",OAUTH_CATALOG_UNAVAILABLE:"oauth.catalogUnavailable"})[code]||"oauth.unavailable";}
   function officialOAuthURL(value){
@@ -142,15 +143,17 @@
     $("build-fast-help").hidden = !/fast/i.test(selected);
   }
   function renderProvider() {
-    const build = isBuild(),oauth=isOAuth();
+    const build = isBuild(),oauth=isOAuth(),native=isNative();
     $("api-fields").hidden = !isAPI();$("build-fields").hidden = !build;$("oauth-fields").hidden=!oauth;
     for (const id of apiControlIds) $(id).disabled = busy || !isAPI();
     for (const id of buildControlIds) $(id).disabled = busy || !build;
-    $("api-concurrency-field").hidden=build;$("api-concurrency").disabled=busy||build;
-    $("source-description").textContent = build ? ui.t("options.buildDescription",uiLanguage) : "";
-    $("source-description").hidden = !build;
+    $("api-concurrency-field").hidden=build||native;$("api-concurrency").disabled=busy||build||native;
+    for(const id of ["web-search","x-search"])$(id).disabled=busy||native;
+    $("source-description").textContent = native ? ui.t("native.help",uiLanguage) : build ? ui.t("options.buildDescription",uiLanguage) : "";
+    $("source-description").hidden = !build&&!native;
+    $("search-options").hidden=native;
     $("save").disabled = busy;
-    $("verification-help").textContent=ui.t(oauth?"oauth.verificationHelp":"options.verificationHelp",uiLanguage);
+    $("verification-help").textContent=ui.t(native?"native.help":oauth?"oauth.verificationHelp":"options.verificationHelp",uiLanguage);
     renderBuildStatus();renderOAuth();
   }
   function requestLocalAccess(){try{return chrome.permissions?.request({origins:["http://127.0.0.1/*"]}) || Promise.resolve(false);}catch{return Promise.resolve(false);}}
@@ -210,7 +213,7 @@
   function clearFieldError(id){const previous=fieldErrors.get(id);fieldErrors.delete(id);$(id).removeAttribute("aria-invalid");$(id).removeAttribute("aria-errormessage");const output=previous?.errorId&&$(previous.errorId);if(output&&previous.errorId.endsWith("-model-status")&&output.textContent===ui.t(previous.key,uiLanguage,previous.vars))output.textContent="";}
   function clearResolvedError(id,resolved,keys){if(resolved&&keys.includes(fieldErrors.get(id)?.key))clearFieldError(id);}
   function renderSearchFeedback(){
-    const missing=!$("web-search").checked&&!$("x-search").checked,output=$("search-status");
+    const missing=!isNative()&&!$("web-search").checked&&!$("x-search").checked,output=$("search-status");
     if(output){output.hidden=!missing;output.textContent=missing?ui.t("options.urlSearchRequired",uiLanguage):"";}
     for(const id of ["web-search","x-search"]){if(missing)$(id).setAttribute("aria-invalid","true");else clearFieldError(id);}
   }
@@ -292,7 +295,7 @@
       lastOptionsFocusNonce = request.nonce;
       // Focus an actionable control for the current connection state. A
       // restored login must never send focus to its hidden sign-in button.
-      let id=request.id==="oauth"?"provider":request.id === "build" || isBuild() ? isBuild() ? "check-build" : "provider" : "api-key";
+      let id=["native","oauth"].includes(request.id)?"provider":request.id === "build" || isBuild() ? isBuild() ? "check-build" : "provider" : "api-key";
       if(isOAuth()){
         const modelAvailable=!Array.isArray(oauthStatus.catalogModels)||oauthStatus.catalogModels.some(entry=>entry.id===$("oauth-model").value&&entry.available!==false);
         if(oauthStatus.connected&&!modelAvailable&&!$("oauth-model").disabled)id="oauth-model";
@@ -599,7 +602,7 @@
     const modelId=isOAuth()?"oauth-model":isBuild()?"build-model":"api-model",effortId=isOAuth()?"oauth-reasoning-effort":isBuild()?"build-reasoning-effort":"api-reasoning-effort";
     const modelField=isOAuth()?"oauthModel":isBuild()?"buildModel":"apiModel",effortField=isOAuth()?"oauthReasoningEffort":isBuild()?"buildReasoningEffort":"apiReasoningEffort";
     const connectionChanged=isAPI()?keyNeedsSave():isBuild()&&(buildSecretChanged||Number($("build-port").value)!==buildConnection.port);
-    const strict=enabled&&(!currentSettings.enabled||provider!==currentSettings.provider||$(modelId).value!==currentSettings[modelField]||$(effortId).value!==currentSettings[effortField]||$("web-search").checked!==currentSettings.webSearch||$("x-search").checked!==currentSettings.xSearch||connectionChanged);
+    const strict=enabled&&!isNative()&&(!currentSettings.enabled||provider!==currentSettings.provider||$(modelId).value!==currentSettings[modelField]||$(effortId).value!==currentSettings[effortField]||$("web-search").checked!==currentSettings.webSearch||$("x-search").checked!==currentSettings.xSearch||connectionChanged);
     // A stale catalog or unfinished connection must not prevent pausing or
     // saving unrelated preferences. Native required checks still apply to
     // ordinary settings, while unchanged connection fields are not submitted.
@@ -677,7 +680,7 @@
     }
     if(strict&&isOAuth()&&Array.isArray(oauthStatus.catalogModels)&&!oauthStatus.catalogModels.some(entry=>entry.id===settings.oauthModel&&entry.available!==false)){fieldError("oauth-model",oauthStatus.catalogError?"oauth.catalogUnavailable":"oauth.modelUnavailable",{model:settings.oauthModel});return;}
     if(strict&&isOAuth()&&(!$("oauth-reasoning-effort").value||!oauthEfforts(settings.oauthModel).includes($("oauth-reasoning-effort").value)||settings.oauthReasoningEffort!==$("oauth-reasoning-effort").value)){fieldError("oauth-reasoning-effort","options.reasoningInvalid");return;}
-    if (strict&&!settings.webSearch && !settings.xSearch) {
+    if (strict&&!isNative()&&!settings.webSearch && !settings.xSearch) {
       renderSearchFeedback();fieldError("x-search","options.urlSearchRequired");return;
     }
     setBusy(true);setStatus("options.saving");

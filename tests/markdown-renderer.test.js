@@ -255,3 +255,26 @@ test('a resource-heavy rendered chunk falls back atomically rather than leaving 
   assert.equal(elements(page.target).length, 0);
   assert.doesNotMatch(page.target.textContent, /Previous completed answer/);
 });
+
+test('numbered citation links render as semantic superscripts with safe destinations',()=>{
+ const p=fixture();p.render('Evidence[[1]](https://example.com/source "Journal") and [ordinary](https://example.com/other).');
+ const sup=elements(p.target,'sup');assert.equal(sup.length,1);assert.equal(sup[0].textContent,'[1]');
+ assert.equal(elements(sup[0],'a')[0].href,'https://example.com/source');assert.equal(elements(sup[0],'a')[0].title,'Journal');
+ assert.equal(elements(p.target,'a').length,2);
+});
+
+test('escaped URL labels display readable punctuation without nested URL links',()=>{
+ const p=fixture();p.render(String.raw`[https://example\.com/a\-b](<https://example.com/a-b>)`);
+ const links=elements(p.target,'a');assert.equal(links.length,1);
+ assert.equal(links[0].textContent,'https://example.com/a-b');assert.equal(links[0].href,'https://example.com/a-b');
+});
+
+for(const [input,expected] of [['约**$32**，结束','$32'],['约**$16,138.6**（估算）','$16,138.6'],['**「内容」**后续','「内容」'],['中文**[来源](https://example.com)**后续','来源']])test('CJK emphasis keeps punctuation and symbol adjacency: '+input,()=>{
+ const p=fixture();p.render(input);assert.equal(elements(p.target,'strong')[0]?.textContent,expected);assert.equal(p.target.textContent.includes('**'),false);
+});
+test('CJK-aware emphasis preserves escaped markers, code, URL stars and incomplete streaming fragments',()=>{
+ const p=fixture();p.render('约\\*\\*$32\\*\\* 与 `约**$32**`\n\n```text\n约**$32**\n```\n\nhttps://example.com/a**b**c');
+ assert.equal(elements(p.target,'strong').length,0);assert.ok(p.target.textContent.includes('约**$32**'));assert.equal(elements(p.target,'a')[0].href,'https://example.com/a**b**c');
+ p.render('约**$32');assert.equal(p.target.textContent,'约**$32');assert.equal(elements(p.target,'strong').length,0);
+ p.render('约**$32**');assert.equal(elements(p.target,'strong')[0].textContent,'$32');
+});

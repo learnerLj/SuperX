@@ -1,9 +1,9 @@
 (function(root,factory) {
   'use strict';
-  const api=factory(typeof module==='object'&&module.exports?require('./marked.umd.js'):root.marked,root);
+  const api=factory(typeof module==='object'&&module.exports?require('./marked.umd.js'):root.marked,root,typeof module==='object'&&module.exports?require('./marked-cjk-friendly.umd.js'):root.markedCjkFriendly);
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.GrokFirstMarkdown=api;
-})(typeof globalThis!=='undefined'?globalThis:this,function(marked,root) {
+})(typeof globalThis!=='undefined'?globalThis:this,function(marked,root,cjkFriendly) {
   'use strict';
 
   // Parse Markdown into tokens, then construct a small, explicit set of DOM
@@ -52,6 +52,7 @@
   }
 
   const lexer=marked?.Marked?new marked.Marked({gfm:true,breaks:true}):null;
+  if(lexer&&cjkFriendly)lexer.use(cjkFriendly());
   lexer?.use({extensions:[{
     name:'gfUrl',level:'inline',
     start(src) {const match=/https?:\/\//i.exec(src);return match?match.index:undefined;},
@@ -61,7 +62,7 @@
       if(!raw)return undefined;
       // Consume even an invalid address so Marked's more permissive default
       // autolinker cannot reinterpret credentials or swallow Chinese prose.
-      if(this.lexer.state.inLink)return {type:'text',raw,text:raw};
+      if(this.lexer.state.inLink)return undefined;
       return {type:'gfUrl',raw,text:raw,href:raw};
     }
   }]});
@@ -106,7 +107,8 @@
               if(token.title)node.title=decodeEntities(token.title);
               if(Array.isArray(token.tokens))inline(node,token.tokens,depth+1,true);
               else appendText(node,token.text??token.raw,true);
-              parent.append(node);break;
+              if(token.type==='link'&&/^\[\d{1,2}\]$/.test(token.text||'')){const sup=element('sup');sup.className='md-citation';sup.append(node);parent.append(sup);}
+              else parent.append(node);break;
             }
             case 'checkbox':appendText(parent,token.checked?'[x] ':'[ ] ');break;
             default:appendText(parent,token.raw??token.text);

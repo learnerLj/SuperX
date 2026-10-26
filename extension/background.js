@@ -1,9 +1,10 @@
 /* SuperX: credentials and provider calls stay in the extension worker. */
-importScripts('feed-core.js', 'api-provider.js', 'build-acp.js', 'build-transport.js', 'build-provider.js', 'build-setup.js', 'ui-i18n.js', 'key-store.js', 'oauth-provider.js', 'history-store.js');
+importScripts('feed-core.js', 'api-provider.js', 'native-provider.js', 'build-acp.js', 'build-transport.js', 'build-provider.js', 'build-setup.js', 'ui-i18n.js', 'key-store.js', 'oauth-provider.js', 'history-store.js');
 const Core = XGrokCore;
 const UI = GrokFirstUI;
 const KeyStore = SuperXKeyStore;
 const BuildKeyStore = SuperXBuildConnectionStore;
+const native = SuperXNative.create({chrome,crypto:globalThis.crypto});
 const history = SuperXHistoryStore.create(chrome.storage.local);
 const HISTORY_ALARM = 'SUPERX_HISTORY_CLEANUP';
 const clients = new Set();
@@ -18,6 +19,7 @@ let securityWrites = Promise.resolve(), securityPending = 0, securityGeneration 
 let hasSavedKey = false, rememberApiKey = true, credentialReady = false, securityFault = false, sealAttempted = false;
 let buildStatus = {connected:false,installed:false,available:false,errorCode:'BUILD_NOT_CONNECTED'}, buildStatusAt = 0, buildStatusPending;
 let buildSecret='',buildConnectionGeneration=0,buildConnectionPending=0;
+let nativeFaultCode="";
 let oauthGeneration=0,oauthActionGeneration=0,oauthPendingLogins=0,oauthCredentialIdentity='',oauthReady=Promise.resolve(),providerFault=false;
 const oauth=SuperXOAuth.create({chrome,fetch:globalThis.fetch?.bind(globalThis),crypto:globalThis.crypto,
   keyStore:KeyStore.create?.({purpose:'oauth-refresh'}),onChange:onOAuthChanged});
@@ -35,7 +37,7 @@ async function initialize() {
   const hasSettings=local.settings&&typeof local.settings==='object'&&!Array.isArray(local.settings)&&Object.keys(local.settings).length>0;
   const legacyConnection=KeyStore.envelopePresent(local.apiKeyEncrypted)||validKey(local.apiKey)||local.apiKeyVault!==undefined||validKey(session.apiKey)||BuildKeyStore.envelopePresent(local.buildConnectionEncrypted);
   settings = Core.normalizeSettings(!hasSettings&&legacyConnection?{provider:'api'}:local.settings);
-  providerFault=local.invalidAnswerSource===true||Boolean(local.settings?.provider&&!['api','build','oauth','native'].includes(local.settings.provider));
+  providerFault=local.invalidAnswerSource===true||Boolean(local.settings?.provider&&!['api','build','oauth','native','x-native'].includes(local.settings.provider));
   if(providerFault)await chrome.storage.local.set({invalidAnswerSource:true});
   // OAuth restoration cannot delay an independent API Key or local connection.
   // Its own gate stays closed until restoration has established usable state.
@@ -97,6 +99,7 @@ function securityAllowsCalls() { return !securityFault && credentialReady && sec
 function buildReady() { return buildConnectionPending===0&&validBuildSecret(buildSecret)&&buildStatus.connected===true&&buildStatus.installed===true&&buildStatus.available===true&&buildStatus.authenticated===true&&buildStatus.permission!==false; }
 function providerAllowsCalls(s=settings) {
   if(providerFault)return false;
+  if(s?.provider==='x-native')return !nativeFaultCode;
   if(s?.provider==='api')return securityAllowsCalls();
   if(s?.provider==='build')return buildReady();
   if(s?.provider==='oauth'){
@@ -133,8 +136,8 @@ function scopedHistory(result){
   const scope=historyScope();
   return {...result,entries:(result.entries||[]).map(value=>{
     const entry={...value};
-    if(entry.analysis&&(entry.analysis.scope||'api')!==scope)delete entry.analysis;
-    if((entry.commentsScope||'api')!==scope)for(const field of ['comments','commentsScope','commentsLanguage','commentsModel','commentsUsage','commentsCompletedAt'])delete entry[field];
+    if(entry.analysis&&(scope==='x-native'||(entry.analysis.scope||'api')!==scope))delete entry.analysis;
+    if(scope==='x-native'||(entry.commentsScope||'api')!==scope)for(const field of ['comments','commentsScope','commentsLanguage','commentsModel','commentsUsage','commentsCompletedAt'])delete entry[field];
     return entry;
   })};
 }
@@ -166,7 +169,7 @@ function queueBuildConnection(message,clear=false){
   let connection;
   try{if(!clear)connection=buildConnection(message);}catch{return Promise.resolve({ok:false,errorKey:'build.codeRequired'});}
   const next=message.settings===undefined?undefined:Core.normalizeSettings({...message.settings,buildPort:connection?.port??settings.buildPort});
-  if(next&&!next.webSearch&&!next.xSearch)return Promise.resolve({ok:false,errorKey:'options.urlSearchRequired'});
+  if(next&&next.provider!=='x-native'&&!next.webSearch&&!next.xSearch)return Promise.resolve({ok:false,errorKey:'options.urlSearchRequired'});
   if(!clear&&sameBuildConnection(connection))return queueSettingsMutation(next??settings);
   const generation=++buildConnectionGeneration;buildConnectionPending++;
   if(settings.provider==='build')revision++;
@@ -234,7 +237,7 @@ async function publicConfig() {
   const status=securityStatus();
   const historyConfig=history.config();
   if(settings.provider==='build')ensureBuildStatus();
-  return {settings,taskRevision:revision,ready:providerAllowsCalls(),keyState:status.keyState,credentialIdentity:settings.provider==='oauth'?oauthCredentialIdentity:'',oauthStatus:oauthFeedStatus(),apiBudgetPaused:false,apiCapacityPaused:false,...(settings.provider==='build'?{buildStatus:{...buildStatus,ready:buildReady()}}:{}),buildConnection:{configured:validBuildSecret(buildSecret),port:settings.buildPort},historyEnabled:historyConfig.enabled,historyEpoch:historyConfig.epoch};
+  return {settings,nativeStatus:{errorCode:nativeFaultCode},taskRevision:revision,ready:providerAllowsCalls(),keyState:status.keyState,credentialIdentity:settings.provider==='oauth'?oauthCredentialIdentity:'',oauthStatus:oauthFeedStatus(),apiBudgetPaused:false,apiCapacityPaused:false,...(settings.provider==='build'?{buildStatus:{...buildStatus,ready:buildReady()}}:{}),buildConnection:{configured:validBuildSecret(buildSecret),port:settings.buildPort},historyEnabled:historyConfig.enabled,historyEpoch:historyConfig.epoch};
 }
 async function notifyHistoryChanged(){await chrome.runtime.sendMessage({type:'HISTORY_CHANGED',...history.config()}).catch(()=>{});}
 async function broadcastHistoryConfig(){
@@ -242,11 +245,11 @@ async function broadcastHistoryConfig(){
   for(const client of clients)send(client.port,{type:'HISTORY_CONFIG',...config});
   await notifyHistoryChanged();
 }
-function historyTicket(post,snapshot=settings){const scope=historyScope(snapshot),capturedRevision=revision;return history.capture(post.id).then(ticket=>({ticket,scope,revision:capturedRevision})).catch(()=>null);}
+function historyTicket(post,snapshot=settings){if(snapshot.provider==='x-native')return null;const scope=historyScope(snapshot),capturedRevision=revision;return history.capture(post.id).then(ticket=>({ticket,scope,revision:capturedRevision})).catch(()=>null);}
 function rememberHistoryResult(ticket,result,comments=false,language=''){
   if(!comments&&Core.readerOutput(result?.text,{final:true}).kind!=='content')return;
   void Promise.resolve(ticket).then(value=>{
-    if(!value||value.revision!==revision||value.scope!==historyScope())return;
+    if(!value||value.scope==='x-native'||value.revision!==revision||value.scope!==historyScope())return;
     return comments?history.comments(value.ticket,{...result,language,scope:value.scope}):history.analysis(value.ticket,{...result,language,scope:value.scope});
   }).then(()=>notifyHistoryChanged()).catch(()=>{});
 }
@@ -415,7 +418,7 @@ function commentCacheKey(post,s,inputFingerprint,analysis) {
 }
 function commentsJob(job) { return job.settings.task==='comments'; }
 function draftJob(job) { return job.settings.task==='draft'; }
-function billingMetadata(value,provider) { return ['api','build','oauth'].includes(provider)?GrokFirstAPI.sanitizedMetadata(value):{}; }
+function billingMetadata(value,provider) { if(provider==='x-native')return {model:'x-web',usageComplete:false};return ['api','build','oauth'].includes(provider)?GrokFirstAPI.sanitizedMetadata(value):{}; }
 function requestMetadata(value,provider) {
   if(!['api','oauth'].includes(provider))return {};
   let diagnostics;
@@ -494,7 +497,7 @@ function withBillingMetadata(value,provider,verificationMode) {
 }
 function jobError(job,error,code,extra={}) { send(job.client.port,{type:commentsJob(job)?'COMMENT_ERROR':'ERROR',requestId:job.requestId,error,code,retryAttempts:job.retryAttempts||0,...extra}); }
 function freshCacheEntry(entry,now) {
-  return entry&&typeof entry==='object'&&!Array.isArray(entry)&&Number.isFinite(entry.completedAt)&&entry.completedAt>=0&&entry.completedAt<=now&&now-entry.completedAt<CACHE_TTL
+  return entry&&typeof entry==='object'&&!Array.isArray(entry)&&entry.provider!=='x-native'&&Number.isFinite(entry.completedAt)&&entry.completedAt>=0&&entry.completedAt<=now&&now-entry.completedAt<CACHE_TTL
     &&(typeof entry.text!=='string'||Core.readerOutput(entry.text,{final:true}).kind==='content');
 }
 function pruneCache(input,now=Date.now()) {
@@ -550,16 +553,17 @@ function waitForAbort(promise, signal) {
 async function openSettings(focus) {
   // Replace stale focus requests even when the caller uses a generic Settings
   // entry point or sends an unlock target from an older content script.
-  try { await chrome.storage.session.set({superxOptionsFocus:{id:focus==='oauth'||settings.provider==='oauth'?'oauth':focus==='build'||settings.provider==='build'?'build':'api-key',nonce:crypto.randomUUID()}}); }
+  try { await chrome.storage.session.set({superxOptionsFocus:{id:focus==='native'||settings.provider==='x-native'?'native':focus==='oauth'||settings.provider==='oauth'?'oauth':focus==='build'||settings.provider==='build'?'build':'api-key',nonce:crypto.randomUUID()}}); }
   catch { /* The settings page remains reachable when session storage fails. */ }
   await chrome.runtime.openOptionsPage();
 }
 async function openHistory(){await chrome.tabs.create({url:chrome.runtime.getURL('history.html')});}
 chrome.runtime.onConnect.addListener(port => {
-  if (port.name !== 'GROKFIRST_FEED' || port.sender?.frameId !== 0 || !isFeed(port.sender?.url)) { port.disconnect(); return; }
+  if (port.name !== 'GROKFIRST_FEED' || !port.sender || !trustedFeed(port.sender)) { port.disconnect(); return; }
   const client = {port,tabId:port.sender.tab.id,cancelEpoch:0,uiLanguage:null,requestCancellations:new Map()}; clients.add(client);
   ready.then(async()=>{client.uiLanguage=UI.normalizeLanguage(client.uiLanguage || uiLanguage);send(port,{type:'CONFIG',...await publicConfig(),used:quotas[client.tabId] || 0,collapsed:Boolean(railStates[client.tabId]),uiLanguage:client.uiLanguage});}).catch(()=>send(port,{type:'FATAL',error:'扩展初始化失败，请重新加载扩展。'}));
   port.onMessage.addListener(message=>{
+    if(message?.type==='NATIVE_EVENT')return;
     const receivedEpoch=client.cancelEpoch,receivedRevision=revision,receivedCredentialGeneration=securityGeneration,receivedBuildGeneration=buildConnectionGeneration,receivedOAuthGeneration=oauthGeneration;
     const messageRequestId=String(message.requestId || '').slice(0,80);
     // Cancellation can arrive before an asynchronous readiness lookup has
@@ -612,8 +616,9 @@ chrome.runtime.onConnect.addListener(port => {
       const requestId=messageRequestId;
       if(!requestId) return;
       if(client.requestCancellations.get(requestId)!==receivedCancellation)return;
-      const currentCredentials=()=>settings.provider==='oauth'?receivedOAuthGeneration===oauthGeneration:settings.provider==='build'?receivedBuildGeneration===buildConnectionGeneration:receivedCredentialGeneration===securityGeneration;
+      const currentCredentials=()=>settings.provider==='x-native'?true:settings.provider==='oauth'?receivedOAuthGeneration===oauthGeneration:settings.provider==='build'?receivedBuildGeneration===buildConnectionGeneration:receivedCredentialGeneration===securityGeneration;
       if(client.cancelEpoch!==receivedEpoch || receivedRevision!==revision||!currentCredentials()){report('任务已取消。','CANCELLED');return;}
+      if(settings.provider==='x-native'&&(comments||draft)){const error=SuperXNative.publicError({code:'X_NATIVE_UNSUPPORTED'});report(error.error,error.code);return;}
       if(settings.provider==='api'&&(securityPending || securityFault)) { report('API Key 设置需要重新确认，请在设置中重试。','NEEDS_KEY');return; }
       const snapshot={...settings,...(settings.provider==='oauth'?{oauthCredentialId:oauth.status().credentialId||''}:{}),...(comments?{task:'comments'}:draft?{task:'draft',language:'auto'}:{})};
       if(Core.isNonTextGenerationModel(Core.providerModel(snapshot))){report(GrokFirstAPI.publicError({code:'MODEL_UNSUPPORTED'}).error,'MODEL_UNSUPPORTED');return;}
@@ -621,17 +626,18 @@ chrome.runtime.onConnect.addListener(port => {
       if(railStates[client.tabId]&&!draft){report('右栏已收起。','RAIL_COLLAPSED');return;}
       let post,inputFingerprint;
       try { if(draft)post=sanitizeDraft(message.draft);else {inputFingerprint=Core.postFingerprint(message.post);post=sanitizePost(message.post);} } catch(e) { report(draft?'请输入有效的草稿和回复上下文。':e.message,draft?'DRAFT_INVALID':'POST_INVALID'); return; }
-      if(!comments&&!draft&&!snapshot.webSearch&&!snapshot.xSearch) { report('通过帖子链接读取全文需要启用 X 搜索或网页搜索。','URL_SEARCH_REQUIRED');return; }
+      if(snapshot.provider!=='x-native'&&!comments&&!draft&&!snapshot.webSearch&&!snapshot.xSearch) { report('通过帖子链接读取全文需要启用 X 搜索或网页搜索。','URL_SEARCH_REQUIRED');return; }
       const analysis=comments?sanitizeAnalysis(message.analysis):undefined;
       const fingerprint=draft?null:comments?commentCacheKey(post,snapshot,inputFingerprint,analysis):cacheKey(post,snapshot,inputFingerprint);
       const ticket=draft?null:historyTicket(post,snapshot),historyLanguage=draft?'':Core.resolvePostLanguage(snapshot.language,post);
-      const cached=draft||message.force ? null : cachedResult(fingerprint);
+      const cached=snapshot.provider==='x-native'||draft||message.force ? null : cachedResult(fingerprint);
       if(cached) { rememberHistoryResult(ticket,cached,comments,historyLanguage);send(port,comments?{type:'COMMENT_RESULT',requestId,comments:cached.comments,cached:true,...billingMetadata(cached,snapshot.provider)}:{type:'RESULT',requestId,result:withBillingMetadata(cached,snapshot.provider,snapshot.apiVerification),cached:true}); return; }
       const config=await publicConfig();
       if(!clients.has(client)||client.cancelEpoch!==receivedEpoch||receivedRevision!==revision||client.requestCancellations.get(requestId)!==receivedCancellation||!currentCredentials())return;
       if(railStates[client.tabId]&&!draft){report('右栏已收起。','RAIL_COLLAPSED');return;}
       if(!config.ready) {
-        if(settings.provider==='oauth')report('请在设置中连接 Grok 订阅并选择可用模型。',oauth.status().errorCode||(!oauth.status().connected?'OAUTH_LOGIN_REQUIRED':'OAUTH_MODEL_UNAVAILABLE'));
+        if(settings.provider==='x-native'){const error=SuperXNative.publicError({code:nativeFaultCode||'X_NATIVE_INTERRUPTED'});report(error.error,error.code);}
+        else if(settings.provider==='oauth')report('请在设置中连接 Grok 订阅并选择可用模型。',oauth.status().errorCode||(!oauth.status().connected?'OAUTH_LOGIN_REQUIRED':'OAUTH_MODEL_UNAVAILABLE'));
         else report(settings.provider==='build'?'请在设置中连接 Grok Build。':'请打开设置并输入 xAI API Key。',settings.provider==='build'?(buildStatus.errorCode||'BUILD_NOT_CONNECTED'):'NEEDS_KEY');
         return;
       }
@@ -655,7 +661,7 @@ chrome.runtime.onConnect.addListener(port => {
 function liveJob(job) {
   return runningJobs.has(job) && jobs.get(job.key)===job && !job.controller.signal.aborted && job.revision===revision && job.clientEpoch===job.client.cancelEpoch && clients.has(job.client);
 }
-function apiLimit(s) { return s.provider==='build'?1:Math.max(1,Math.min(8,Math.trunc(Number(s.apiConcurrency))||3)); }
+function apiLimit(s) { return s.provider==='x-native'?10:s.provider==='build'?1:Math.max(1,Math.min(8,Math.trunc(Number(s.apiConcurrency))||3)); }
 const API_BUDGET_CODES=new Set(['spending_limit','insufficient_credits','insufficient_quota','usage_limit_exceeded']);
 function apiBudgetFailure(value) {
   const supplied=GrokFirstAPI.sanitizedVerificationFailure(value?.verificationFailure)||GrokFirstAPI.sanitizedVerificationFailure(value?.partialResult?.verificationFailure);
@@ -786,9 +792,9 @@ async function executeJob(job) {
         else if(job.attemptHasReaderText||!job.retryAttempts)delete job.retainedFactCheck;
       }
       if(liveJob(job)&&!commentsJob(job))send(client.port,{type:'UPDATE',requestId,...(hasText&&(text.trim()||job.attemptHasReaderText||!job.retainedFactCheck)?{text}:{}),phase:update.phase,
-        verificationStatus:update.verificationStatus,warning:update.warning,...(!hasText||text.trim()||job.attemptHasReaderText||!job.retainedFactCheck?{sources:update.sources}:{}),...aggregateBilling(job,job.billing),...verificationMetadata(update,job.settings.apiVerification,text||'')});
+        verificationStatus:update.verificationStatus,warning:update.warning,...(job.settings.provider==='x-native'?{provider:'x-native',verified:false,searched:false}:{}),...(!hasText||text.trim()||job.attemptHasReaderText||!job.retainedFactCheck?{sources:update.sources}:{}),...aggregateBilling(job,job.billing),...verificationMetadata(update,job.settings.apiVerification,text||'')});
     };
-    const result=withBillingMetadata(await (job.settings.provider==='build'?runAPI(job,onUpdate):waitForAbort(trackedAPICall(job,onUpdate),signal)),job.settings.provider,commentsJob(job)?undefined:job.settings.apiVerification);
+    const result=withBillingMetadata(await (['build','x-native'].includes(job.settings.provider)?runAPI(job,onUpdate):waitForAbort(trackedAPICall(job,onUpdate),signal)),job.settings.provider,commentsJob(job)?undefined:job.settings.apiVerification);
     if(!liveJob(job))return;
     job.billing={...job.billing,...billingMetadata(result,job.settings.provider)};
     if(result.requestDiagnostics)job.requestDiagnostics=result.requestDiagnostics;
@@ -814,7 +820,7 @@ async function executeJob(job) {
     releaseAPISlot(job);pump();
     result.completedAt=Date.now();
     if(!draftJob(job))rememberHistoryResult(job.historyTicket,result,commentsJob(job),job.historyLanguage);
-    if(!draftJob(job)&&epoch===cacheEpoch && !['incomplete','failed'].includes(result.verificationStatus)) {
+    if(job.settings.provider!=='x-native'&&!draftJob(job)&&epoch===cacheEpoch && !['incomplete','failed'].includes(result.verificationStatus)) {
       cache[job.fingerprint]=result;
       cache=pruneCache(cache);
       // Display a completed answer immediately. Optional serialized cache I/O
@@ -824,6 +830,19 @@ async function executeJob(job) {
     const recovered={retryAttempts:job.retryAttempts};
     if(liveJob(job))send(client.port,commentsJob(job)?{type:'COMMENT_RESULT',requestId,comments:result.comments,cached:false,...aggregateBilling(job,job.billing),...recovered}:{type:'RESULT',requestId,result,cached:false,...recovered});
   } catch(e) {
+    if(job.settings.provider==='x-native'&&e.code==='X_NATIVE_CANCEL_UNCONFIRMED'){
+      const safe=SuperXNative.publicError(e);
+      for(const waiting of [...jobs.values()].filter(item=>item!==job&&item.settings.provider==='x-native'&&!runningJobs.has(item))){jobError(waiting,safe.error,safe.code);abortJob(waiting);}
+      // The provider retains its source-bound gate until CLOSED or disconnect.
+      // This error must take precedence over the initiating timeout/cancel.
+      if(clients.has(client)&&job.revision===revision&&(!jobs.has(job.key)||jobs.get(job.key)===job))jobError(job,safe.error,safe.code,aggregateBilling(job,job.billing));
+      return;
+    }
+    if(liveJob(job)&&job.settings.provider==='x-native'&&['X_NATIVE_LOGIN_REQUIRED','X_NATIVE_USAGE_LIMIT','X_NATIVE_PAGE_ERROR','X_NATIVE_UNAVAILABLE'].includes(e.code)){
+      nativeFaultCode=e.code;
+      for(const waiting of [...jobs.values()].filter(item=>item!==job&&item.settings.provider==='x-native'&&!runningJobs.has(item))){jobError(waiting,SuperXNative.publicError(e).error,e.code);abortJob(waiting);}
+      void broadcastConfig();
+    }
     if(job.settings.provider==='build'&&e.code==='BUILD_CANCEL_UNCONFIRMED'){
       // A deadline may have aborted this attempt before the local service
       // reports an unconfirmed cancellation. That stronger safety result must
@@ -842,7 +861,7 @@ async function executeJob(job) {
       const partialText=Core.readerOutput(retained?.text,{final:true}).text.slice(0,30000);
       const partialResult=partialText?withBillingMetadata({...retained,...errorBilling,...diagnosticMetadata,text:partialText,verificationStatus:'incomplete'},job.settings.provider,job.settings.apiVerification):undefined;
       if(partialResult&&!commentsJob(job))job.retainedFactCheck=sanitizeAnalysis(partialResult);
-      const safeError=e.code==='MODEL_UNSUPPORTED'?GrokFirstAPI.publicError(e):job.settings.provider==='build'?SuperXBuild.publicError(e):GrokFirstAPI.publicError(e);
+      const safeError=job.settings.provider==='x-native'?SuperXNative.publicError(e):e.code==='MODEL_UNSUPPORTED'?GrokFirstAPI.publicError(e):job.settings.provider==='build'?SuperXBuild.publicError(e):GrokFirstAPI.publicError(e);
       const budgetFailure=['api','oauth'].includes(job.settings.provider)?apiBudgetFailure(e):undefined;
       const capacityFailure=['api','oauth'].includes(job.settings.provider)&&apiCapacityFailure(e)?GrokFirstAPI.sanitizedVerificationFailure(e.verificationFailure)||GrokFirstAPI.sanitizedVerificationFailure({stage:'verify',code:'SERVER',...e.failureDetails,errorCode:'API_CAPACITY'}):undefined;
       if(partialResult&&!draftJob(job))rememberHistoryResult(job.historyTicket,{...partialResult,completedAt:Date.now()},false,job.historyLanguage);
@@ -858,7 +877,7 @@ async function executeJob(job) {
         ...verificationMetadata(reason,job.settings.apiVerification)},job.settings.provider,job.settings.apiVerification):undefined;
       if(partialResult&&!draftJob(job))rememberHistoryResult(job.historyTicket,{...partialResult,completedAt:Date.now()},false,job.historyLanguage);
       const metadata={...billing,...(timedOut&&!commentsJob(job)?verificationMetadata(reason,job.settings.apiVerification):{}),...(partialResult?{partialResult}:{} )};
-      if(!timedOut||!retryPlan(job,reason,reason.code,metadata))jobError(job,timedOut?GrokFirstAPI.publicError(reason).error:'请求已取消；可手动重试。',timedOut?reason.code:'CANCELLED',{...metadata,retryAttempts:job.retryAttempts});
+      if(!timedOut||!retryPlan(job,reason,reason.code,metadata))jobError(job,timedOut?(job.settings.provider==='x-native'?SuperXNative.publicError(reason):GrokFirstAPI.publicError(reason)).error:'请求已取消；可手动重试。',timedOut?reason.code:'CANCELLED',{...metadata,retryAttempts:job.retryAttempts});
     }
   } finally {
     clearAPIDeadline(job);job.executionFinished=true;
@@ -868,6 +887,7 @@ async function executeJob(job) {
 }
 async function runAPI(job,onUpdate) {
   const signal=job.controller.signal;
+  if(job.settings.provider==='x-native')return native.run(job.post,job.settings,{signal,onUpdate,client:job.client});
   if(Core.isNonTextGenerationModel(Core.providerModel(job.settings)))throw Object.assign(new Error('The selected model generates images or video and cannot fact-check posts.'),{code:'MODEL_UNSUPPORTED'});
   if(job.settings.provider==='build'){
     const connection=buildConnection({port:job.settings.buildPort});
@@ -1007,6 +1027,7 @@ function queueSecurityMutation(message) {
 }
 async function saveSettings(input) {
   const next=Core.normalizeSettings(input);
+  if(next.provider==='x-native')nativeFaultCode='';
   if(JSON.stringify(next)!==JSON.stringify(settings)) {
     const modelChanged=next.apiModel!==settings.apiModel;
     const jobSettings=value=>{
@@ -1084,17 +1105,17 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
     const raw=message.apiKey,apiKey=typeof raw==='string'?raw.trim():raw==null?'':null;
     if(apiKey===null||typeof raw==='string'&&(/[\r\n]/.test(raw)||raw.trim()&&!validKey(raw))) {respond({ok:false,errorKey:'errors.keyInvalid'});return true;}
     if(message.remember!==undefined&&typeof message.remember!=='boolean') {respond({ok:false,errorKey:'errors.keyInvalid'});return true;}
-    if(message.settings?.provider!==undefined&&!['api','oauth','build'].includes(message.settings.provider)){respond({ok:false,errorKey:'options.providerChoice'});return true;}
+    if(message.settings?.provider!==undefined&&!['api','oauth','build','x-native'].includes(message.settings.provider)){respond({ok:false,errorKey:'options.providerChoice'});return true;}
     const next=message.settings===undefined?undefined:Core.normalizeSettings(message.settings);
-    if(next&&!next.webSearch&&!next.xSearch) {respond({ok:false,errorKey:'options.urlSearchRequired'});return true;}
+    if(next&&next.provider!=='x-native'&&!next.webSearch&&!next.xSearch) {respond({ok:false,errorKey:'options.urlSearchRequired'});return true;}
     queueSecurityMutation({apiKey,remember:message.remember,settings:next})
       .then(respond).catch(()=>respond(securityError()));
     return true;
   }
   if(trustedUI(sender) && message?.type==='SAVE_SETTINGS') {
-    if(message.settings?.provider!==undefined&&!['api','oauth','build'].includes(message.settings.provider)){respond({ok:false,errorKey:'options.providerChoice'});return true;}
+    if(message.settings?.provider!==undefined&&!['api','oauth','build','x-native'].includes(message.settings.provider)){respond({ok:false,errorKey:'options.providerChoice'});return true;}
     const next=Core.normalizeSettings(message.settings);
-    if(!next.webSearch&&!next.xSearch) {respond({ok:false,errorKey:'options.urlSearchRequired'});return true;}
+    if(next.provider!=='x-native'&&!next.webSearch&&!next.xSearch) {respond({ok:false,errorKey:'options.urlSearchRequired'});return true;}
     // Join the credential chain at receipt so even same-tick saves apply in the
     // user's requested order and cannot overwrite a newer atomic Key save.
     queueSettingsMutation(next).then(respond).catch(()=>respond({ok:false,error:'扩展操作失败，请重新加载扩展。'}));

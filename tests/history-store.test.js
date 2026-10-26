@@ -105,3 +105,12 @@ test('statuses avoid duplicating the full history payload and returned DTOs cann
   const f=fixture();await f.store.visit([post(100)],0);const status=await f.store.status();assert.equal(status.entries,undefined);assert.equal(status.count,1);
   const response=await f.store.get();response.entries[0].text='Changed externally';response.entries.push(post(101));assert.equal((await f.store.get()).entries[0].text,'Visible post 100');assert.equal((await f.store.get()).count,1);
 });
+
+test('native scope never persists answers or comments and restores only visits',async()=>{
+  const f=fixture();await f.store.visit([post(100)],0);const ticket=await f.store.capture(100);
+  await f.store.analysis(ticket,{scope:'x-native',text:'Private web account answer'});
+  await f.store.comments(ticket,{scope:'x-native',comments:['Private comment']});
+  const entry=(await f.store.get()).entries[0];assert.equal(entry.visits,1);assert.equal(entry.analysis,undefined);assert.equal(entry.comments,undefined);
+  const restored=fixture({superxHistory:[{...f.data.superxHistory[0],analysis:{scope:'x-native',text:'Old web answer'},comments:['Old comment'],commentsScope:'x-native'}]});
+  const saved=(await restored.store.get()).entries[0];assert.equal(saved.analysis,undefined);assert.equal(saved.comments,undefined);assert.equal(saved.visits,1);assert.equal(JSON.stringify(restored.data).includes('Old web answer'),false);
+});

@@ -1,5 +1,10 @@
 # Changelog
 
+## Local development — 2026-10-26
+
+- Add a separate X built-in Grok connection for published-post fact checks through the native website, with serial same-page connection initialization, up to 10 independent Fast requests and right-column answers/sources, without task tabs or page navigation. No API Key or Build required.
+- Keep existing connections and defaults. Disable drafts/comments and shared native answer persistence; require manual retry after native failures. Website allowance and chat retention still apply. This is not a store or GitHub release.
+
 SuperX release history. The extension's `manifest.json` is the authoritative installed version. Test counts below describe those releases' recorded checks, not live provider or browser-store certification.
 
 ## 1.0.0 — Fact-check posts, drafts and images (2026-10-24)

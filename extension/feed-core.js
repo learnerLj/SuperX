@@ -57,10 +57,10 @@
     return ['auto','none','minimal','low','medium','high','xhigh'].includes(value)?value:'none';
   }
   function providerModel(settings) {
-    return settings?.provider==='oauth'?settings.oauthModel||'grok-4.3':settings?.provider==='build'?settings.buildModel||'grok-4.3':settings?.apiModel||'grok-4.3';
+    return settings?.provider==='x-native'?'x-web':settings?.provider==='oauth'?settings.oauthModel||'grok-4.3':settings?.provider==='build'?settings.buildModel||'grok-4.3':settings?.apiModel||'grok-4.3';
   }
   function providerEffort(settings) {
-    return settings?.provider==='oauth'?oauthReasoningEffort(settings.oauthReasoningEffort):settings?.provider==='build'?buildReasoningEffort(providerModel(settings),settings.buildReasoningEffort):reasoningEffort(providerModel(settings),settings?.apiReasoningEffort);
+    return settings?.provider==='x-native'?'auto':settings?.provider==='oauth'?oauthReasoningEffort(settings.oauthReasoningEffort):settings?.provider==='build'?buildReasoningEffort(providerModel(settings),settings.buildReasoningEffort):reasoningEffort(providerModel(settings),settings?.apiReasoningEffort);
   }
   const API_FAILURE_PROVIDER_CODES=new Set(['invalid_request_error','invalid_request','bad_request','invalid_api_key','authentication_error','unauthenticated','permission_error','permission_denied','forbidden','insufficient_quota','insufficient_credits','spending_limit','usage_limit_exceeded','rate_limit_exceeded','rate_limit_error','too_many_requests','resource_exhausted','model_not_found','model_not_supported','unsupported_model','unsupported_parameter','invalid_parameter','invalid_argument','context_length_exceeded','server_error','internal_server_error','internal_error','service_unavailable','service_unavailable_error','overloaded_error','timeout','request_timeout','gateway_timeout','tool_error','tool_unavailable','search_error','search_unavailable','content_filter']);
   function apiFailureProviderCode(value){
@@ -82,6 +82,7 @@
     const object=item=>item&&typeof item==='object'&&!Array.isArray(item)?item:null;
     const values=[object(value),object(value?.partialResult)].filter(Boolean);
     if(!values.length)return {retryable:false,reason:'not_failure'};
+    if(values.some(item=>item.provider==='x-native'||typeof item.code==='string'&&item.code.startsWith('X_NATIVE_')))return {retryable:false,reason:'native_no_replay'};
     const failures=values.flatMap(item=>[object(item.verificationFailure),object(item.failureDetails)]).filter(Boolean);
     const codes=values.map(item=>item.code).concat(failures.map(item=>item.errorCode));
     const providers=failures.map(item=>apiFailureProviderCode(item.providerCode)).filter(Boolean);
@@ -353,7 +354,7 @@
     const concurrency=boundedNumber(value.apiConcurrency,DEFAULT_SETTINGS.apiConcurrency,1,8);
     return {
       // The retired page automation provider is unrelated to Grok Build.
-      provider: ['api','build','oauth'].includes(value.provider) ? value.provider : defaultProvider,
+      provider: ['api','build','oauth','x-native'].includes(value.provider) ? value.provider : defaultProvider,
       enabled: typeof value.enabled === 'boolean' ? value.enabled : DEFAULT_SETTINGS.enabled,
       // Upgrade former zero-delay/default-four records once. The versioned
       // output preserves later explicit selections of zero or four.

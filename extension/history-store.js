@@ -39,7 +39,7 @@
     return result;
   }
   function model(value){return typeof value==='string'&&/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)?value:'';}
-  function scope(value){return typeof value==='string'&&/^(?:api|build|oauth:[A-Za-z0-9-]{1,100})$/.test(value)?value:'';}
+  function scope(value){return typeof value==='string'&&/^(?:api|build|x-native|oauth:[A-Za-z0-9-]{1,100})$/.test(value)?value:'';}
   function metadata(value){
     const result={};if(value?.usage&&typeof value.usage==='object')result.usage=usage(value.usage);
     if(typeof value?.usageComplete==='boolean')result.usageComplete=value.usageComplete;
@@ -54,6 +54,7 @@
     return result;
   }
   function cleanAnalysis(value,now){
+    if(value?.scope==='x-native'||value?.provider==='x-native')return null;
     const body=text(value?.text,30000);if(!body.trim())return null;
     const sources=(Array.isArray(value.sources)?value.sources:[]).slice(0,20).map(item=>({url:safeUrl(item?.url),title:text(item?.title,200)})).filter(item=>item.url);
     const result={text:body,sources,verificationStatus:text(value.verificationStatus,40),language:text(value.language,30),completedAt:Number.isFinite(value.completedAt)&&value.completedAt>=0&&value.completedAt<=now?value.completedAt:now,...metadata(value)};
@@ -73,7 +74,7 @@
       if(!post||!Number.isFinite(last)||last<0||last>now||now-last>=limits.ttlMs)continue;
       const entry={...post,recordId:text(value.recordId,100),firstViewedAt:Number.isFinite(first)&&first>=0&&first<=last?first:last,lastViewedAt:last,visits:Number.isSafeInteger(value.visits)&&value.visits>0?Math.min(value.visits,1_000_000):1};
       const analysis=cleanAnalysis(value.analysis,now);if(analysis)entry.analysis=analysis;
-      const comments=cleanComments(value.comments);if(comments.length){entry.comments=comments;entry.commentsCompletedAt=Number.isFinite(value.commentsCompletedAt)&&value.commentsCompletedAt<=now?value.commentsCompletedAt:now;
+      const comments=value.commentsScope==='x-native'?[]:cleanComments(value.comments);if(comments.length){entry.comments=comments;entry.commentsCompletedAt=Number.isFinite(value.commentsCompletedAt)&&value.commentsCompletedAt<=now?value.commentsCompletedAt:now;
         if(scope(value.commentsScope))entry.commentsScope=scope(value.commentsScope);
         entry.commentsLanguage=text(value.commentsLanguage,30);if(model(value.commentsModel))entry.commentsModel=model(value.commentsModel);if(value.commentsUsage&&typeof value.commentsUsage==='object')entry.commentsUsage=usage(value.commentsUsage);}
       const previous=records.get(entry.id);if(!previous||previous.lastViewedAt<entry.lastViewedAt)records.set(entry.id,entry);
@@ -145,12 +146,12 @@
         return entry?{id:entry.id,recordId:entry.recordId,epoch:state.resultEpoch}:null;
       });},
       analysis(ticket,value){return run(state=>{
-        if(!ticket||!state.enabled||ticket.epoch!==state.resultEpoch)return;
+        if(value?.scope==='x-native'||!ticket||!state.enabled||ticket.epoch!==state.resultEpoch)return;
         const index=state.entries.findIndex(item=>item.id===ticket.id&&item.recordId===ticket.recordId),entry=state.entries[index],analysis=cleanAnalysis(value,now());
         if(entry&&analysis)state.entries[index]={...entry,analysis};
       });},
       comments(ticket,value){return run(state=>{
-        if(!ticket||!state.enabled||ticket.epoch!==state.resultEpoch)return;
+        if(value?.scope==='x-native'||!ticket||!state.enabled||ticket.epoch!==state.resultEpoch)return;
         const index=state.entries.findIndex(item=>item.id===ticket.id&&item.recordId===ticket.recordId),entry=state.entries[index],comments=cleanComments(value?.comments);
         if(entry&&comments.length){
           const {commentsModel,commentsUsage,commentsScope,...previous}=entry;

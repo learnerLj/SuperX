@@ -25,6 +25,7 @@
   }
   function blockedReason() {
     if (!config.ready) {
+      if(currentSettings.provider==="x-native")return config.nativeStatus?.errorCode==="X_NATIVE_LOGIN_REQUIRED"?"native.login":"native.failed";
       if(currentSettings.provider==="oauth"){
         const state=config.oauthStatus||{};
         if(["starting","awaiting_authorization","authorizing"].includes(state.state))return "oauth.authorizing";
@@ -40,6 +41,7 @@
   function toggleLabel(reason) {
     if(!loaded)return "common.loading";
     if(!reason)return currentSettings.enabled ? "common.pause" : "common.resume";
+    if(currentSettings.provider==="x-native")return "common.openSettings";
     if(currentSettings.provider==="build")return "popup.setupBuild";
     if(currentSettings.provider!=="oauth")return "popup.addKey";
     const state=config.oauthStatus||{};
@@ -51,8 +53,8 @@
     $("enabled-label").textContent = ui.t(loaded ? reason || (currentSettings.enabled ? "common.enabled" : "common.paused") : "common.loading",uiLanguage,{model:currentSettings.oauthModel});
     $("indicator").dataset.enabled = String(loaded && !reason && currentSettings.enabled);
     const build=currentSettings.provider==="build",oauth=currentSettings.provider==="oauth";
-    $("provider-label").textContent = ui.t(oauth?"popup.oauthLabel":build ? "popup.buildLabel" : "popup.apiLabel",uiLanguage,{count:currentSettings.apiConcurrency,transport:currentSettings.buildTransport.toUpperCase()});
-    $("provider-hint").textContent = ui.t(oauth?"popup.oauthHint":build ? "popup.buildHint" : "popup.apiHint",uiLanguage);
+    $("provider-label").textContent = ui.t(currentSettings.provider==="x-native"?"native.label":oauth?"popup.oauthLabel":build ? "popup.buildLabel" : "popup.apiLabel",uiLanguage,{count:currentSettings.apiConcurrency,transport:currentSettings.buildTransport.toUpperCase()});
+    $("provider-hint").textContent = ui.t(currentSettings.provider==="x-native"?"native.help":oauth?"popup.oauthHint":build ? "popup.buildHint" : "popup.apiHint",uiLanguage);
     $("toggle").textContent = ui.t(toggleLabel(reason),uiLanguage);
     $("toggle").disabled = busy || !loaded;
     $("options").hidden = Boolean(reason);
@@ -65,7 +67,7 @@
   }
   function showError(key,error) { errorMessage = {key,error};render(); }
   async function openKeySettings() {
-    const result = await chrome.runtime.sendMessage({type:"OPEN_SETTINGS",focus:currentSettings.provider==="oauth"?"oauth":currentSettings.provider==="build" ? "build" : "api-key"});
+    const result = await chrome.runtime.sendMessage({type:"OPEN_SETTINGS",focus:currentSettings.provider==="x-native"?"native":currentSettings.provider==="oauth"?"oauth":currentSettings.provider==="build" ? "build" : "api-key"});
     if (!result?.ok) throw new Error(ui.t("errors.noResponse",uiLanguage));
   }
   async function load() {

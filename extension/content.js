@@ -8,6 +8,7 @@
   if (workerNonce) return;
 
   const Core = XGrokCore, Layout = GrokFirstOverlayLayout, UI = GrokFirstUI;
+  const nativePanel=SuperXNativePanel.create({document,window,send:message=>post(message)});
   let xUILanguage = UI.normalizeLanguage(document.documentElement.getAttribute('lang') || navigator.language || 'en');
   let uiLanguage = UI.resolveLanguage('auto',xUILanguage);
   const t = (key, vars) => UI.t(key, uiLanguage, vars);
@@ -152,6 +153,7 @@
   }
   function connectionLost(error,sourcePort=port) {
     if(sourcePort && sourcePort!==port)return;
+    nativePanel.disconnect();
     needsPageRefresh=invalidContext(error);
     // Chrome may suspend an idle MV3 worker. A closed idle port is not an API
     // failure and must not overwrite completed reading or restart paid work.
@@ -218,8 +220,9 @@
       taskRevision,restoring:settings.provider==='oauth'&&oauthState.state==='restoring',
       needsProvider:needsProvider(),identity:JSON.stringify([settings.provider,credentialIdentity,Core.providerModel(settings),Core.providerEffort(settings),settings.buildTransport,settings.buildPort,settings.webSearch,settings.xSearch,settings.explanationMode])});
   }
-  let buildErrorCode='';
+  let buildErrorCode='',nativeErrorCode='';
   function needsProvider(){
+    if(settings.provider==='x-native')return nativeErrorCode==='X_NATIVE_LOGIN_REQUIRED'?'native.login':'native.failed';
     if(settings.provider==='oauth'){
       if(oauthState.connected&&oauthState.modelAvailable===false)return 'oauth.modelUnavailable';
       if(oauthState.state==='restoring'||oauthState.state==='refreshing')return 'oauth.refreshing';
@@ -230,7 +233,7 @@
     return settings.provider==='build'?(buildErrorCode.startsWith('BUILD_')?errorKey(buildErrorCode):'build.unknown'):'status.needsKey';
   }
   async function openSettings() {
-    const message={type:'OPEN_SETTINGS',focus:settings.provider==='oauth'?'oauth':settings.provider==='build'?'build':'api-key'};
+    const message={type:'OPEN_SETTINGS',focus:settings.provider==='x-native'?'native':settings.provider==='oauth'?'oauth':settings.provider==='build'?'build':'api-key'};
     // Settings can add or replace a Key. Restore the feed subscription so its
     // updated CONFIG can reach a tab that previously had no usable credential.
     if(workerSleeping)connect();
@@ -257,7 +260,7 @@
     railHistory.setAttribute('aria-label',t('common.history'));railHistory.title=t('common.history');
     railCollapse.setAttribute('aria-label',t('common.collapse'));railCollapse.title=t('tooltip.collapse');
     railExpand.setAttribute('aria-label',t('common.expand'));railExpand.title=t('tooltip.expand');
-    railHeader.title=settings.provider==='oauth'?t('oauth.modeLabel',{count:settings.apiConcurrency}):settings.provider==='build'?t('popup.buildLabel',{transport:settings.buildTransport.toUpperCase()}):t('tooltip.apiMode',{count:settings.apiConcurrency});
+    railHeader.title=settings.provider==='x-native'?t('native.label'):settings.provider==='oauth'?t('oauth.modeLabel',{count:settings.apiConcurrency}):settings.provider==='build'?t('popup.buildLabel',{transport:settings.buildTransport.toUpperCase()}):t('tooltip.apiMode',{count:settings.apiConcurrency});
   }
   function syncUILanguage() {
     const observed=UI.normalizeLanguage(document.documentElement.getAttribute('lang') || navigator.language || 'en');
@@ -269,7 +272,7 @@
   }
   function renderStatusText(entry,key,vars={}) {
     const target=entry.ui.status;
-    if(key.startsWith('oauth.')){
+    if(key.startsWith('oauth.')||key.startsWith('native.')){
       const button=node('button','status-settings',t('common.settings'));button.type='button';button.addEventListener('click',()=>openSettings());
       target.replaceChildren(document.createTextNode(t(key,{model:settings.oauthModel,...vars})+' '),button);return;
     }
@@ -347,6 +350,7 @@
     entry.ui.box.setAttribute('aria-busy',String(active||entry.status==='retry-wait'));
   }
   function errorKey(code,failure) {
+    if(typeof code==='string'&&code.startsWith('X_NATIVE_'))return code==='X_NATIVE_UNSUPPORTED'?'native.unsupported':code==='X_NATIVE_LOGIN_REQUIRED'?'native.login':code==='X_NATIVE_PANEL_BUSY'?'native.busy':code==='X_NATIVE_CANCEL_UNCONFIRMED'?'native.cleanup':'native.failed';
     if(code==='MODEL_UNSUPPORTED')return 'error.modelUnsupported';
     if(code==='MEDIA_INPUT_LIMIT')return 'error.mediaLimit';
     if(code==='BUILD_IMAGE_UNSUPPORTED')return 'build.imageUnsupported';
@@ -434,6 +438,9 @@
     } catch(error){connectionLost(error);}
   }
   function handleMessage(message) {
+    if(message.type==='NATIVE_RUN'){nativePanel.run(message);return;}
+    if(message.type==='NATIVE_CANCEL'){nativePanel.cancel(message.nonce);return;}
+    if(message.type==='NATIVE_PING')return;
     if(message.type==='HISTORY_CONFIG') {configureHistory(message.enabled,message.epoch);return;}
     if(message.type==='HISTORY_ACK') {
       const batch=historyPending.get(message.batchId);if(!batch)return;
@@ -469,6 +476,7 @@
       if(dwellChanged)resetDwellWaits();
       configureHistory(message.historyEnabled,message.historyEpoch);
       providerReady=Boolean(message.ready)&&!pendingOAuthIdentity;used=message.used || 0;
+      nativeErrorCode=message.nativeStatus?.errorCode||'';
       buildErrorCode=typeof message.buildStatus?.errorCode==='string'?message.buildStatus.errorCode:'';
       syncUILanguage();
       for(const entry of allEntries())if(entry.connectionStatus){
@@ -1217,7 +1225,7 @@
     const ui=entry.ui;if(!ui)return;
     const loading=['queued','running','retry-wait'].includes(entry.commentStatus);
     ui.generateComments.textContent=t(entry.commentStatus==='error'?'common.retryComments':'common.generateComments');
-    ui.generateComments.hidden=!usableConnection()||entry.status==='unsupported';ui.generateComments.disabled=loading||!usableConnection()||wakeActions.has(wakeKey(entry,'comments'));
+    ui.generateComments.hidden=settings.provider==='x-native'||!usableConnection()||entry.status==='unsupported';ui.generateComments.disabled=loading||!usableConnection()||wakeActions.has(wakeKey(entry,'comments'));
     ui.comments.setAttribute('aria-label',t('aria.comments'));ui.comments.setAttribute('aria-busy',String(loading));
     ui.commentHeading.textContent=t('common.comments');ui.commentHint.textContent=t('comments.copyHint');ui.commentHeading.hidden=ui.commentHint.hidden=!entry.comments.length;
     if(entry.copyStatusKey)ui.copyStatus.textContent=t(entry.copyStatusKey);
@@ -1332,6 +1340,7 @@
       .answer code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;white-space:pre-wrap;overflow-wrap:anywhere;background:rgba(127,127,127,.13);padding:1px 4px}.answer pre{max-width:100%;margin:12px 0;padding:10px;border:1px solid var(--gf-border,#2f3336);white-space:pre-wrap;overflow-wrap:anywhere}.answer pre code{display:block;font-size:.85em;background:transparent;padding:0;white-space:pre-wrap;overflow-wrap:anywhere}.answer hr{border:0;border-top:1px solid var(--gf-border,#2f3336);margin:16px 0}
       .answer .analysis-section>:first-child{margin-top:0}.answer .analysis-section>:last-child{margin-bottom:0}.answer .analysis-divider{margin:16px 0}.answer .analysis-divider[hidden],.answer .verification-answer[hidden]{display:none}
       .answer table{width:100%;max-width:100%;table-layout:fixed;border-collapse:collapse;font-size:.9em;margin:12px 0}.answer th,.answer td{border:1px solid var(--gf-border,#2f3336);padding:6px;text-align:start;vertical-align:top;overflow-wrap:anywhere;word-break:break-word}.answer th{font-weight:700}.answer .md-align-left{text-align:left}.answer .md-align-center{text-align:center}.answer .md-align-right{text-align:right}.answer .markdown-literal{white-space:pre-wrap}
+      .answer .md-citation{font-size:.75em;line-height:0;vertical-align:super;white-space:nowrap}.answer .md-citation a{padding-inline:1px}
       a{color:var(--gf-accent,#1d9bf0);text-decoration:none;overflow-wrap:anywhere;word-break:break-word;}a:hover{text-decoration:underline}.sources{font-size:13px;display:grid;grid-template-columns:minmax(0,1fr);gap:4px;margin-top:12px}.sources:empty{display:none}.note{color:var(--gf-muted,#71767b);font-size:12px;margin-top:12px;overflow-wrap:anywhere;}.note:empty{display:none}
       .actions{display:none;flex-wrap:wrap;gap:12px;margin-top:12px;font-size:13px}.actions:has(button:not([hidden])){display:flex}.actions button[hidden]{display:none}
       .retry-status{color:var(--gf-muted,#71767b);font-size:12px;overflow-wrap:anywhere;margin-top:10px}.retry-status[hidden]{display:none}

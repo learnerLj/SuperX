@@ -50,7 +50,7 @@ The [acceptance record](docs/RELEASE_CHECKLIST.md) distinguishes automated check
 - Local result caching and specific failure details when a fact check cannot finish; any available partial findings remain readable.
 - A searchable, on-device history of posts viewed in the last 24 hours, including already generated answers and comments; available after browser restart.
 
-SuperX's AI features require a configured connection; local browsing history works without one. Subscription OAuth connects directly from the extension, while CLI / ACP uses the official local service. Neither clicks X's Grok buttons. The X built-in Grok mode and URL-only interpretation mode were removed in version 0.7.0. SuperX is an independent project and is not affiliated with X or xAI.
+SuperX's AI features require a configured connection; local browsing history works without one. Subscription OAuth connects directly from the extension, while CLI / ACP uses the official local service. Neither clicks X's Grok buttons. The X built-in Grok mode and URL-only interpretation mode were removed in version 0.7.0. This local development branch adds a new **X built-in Grok** connection for published-post checks; see [setup and limitations](docs/X_NATIVE_GROK.md). The earlier mode remains historical; this is a separate implementation. SuperX is an independent project and is not affiliated with X or xAI.
 
 ## Install
 

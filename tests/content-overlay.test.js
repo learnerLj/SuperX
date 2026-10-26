@@ -6,6 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const core = require('../extension/feed-core.js');
+const nativePanelFactory = require('../extension/native-panel.js');
 const layout = require('../extension/overlay-layout.js');
 const ui = require('../extension/ui-i18n.js');
 
@@ -247,6 +248,7 @@ function fixture({postCount=2,connectError=null,historyAck=true}={}) {
   const location = { hash: '', pathname: '/home', href: 'https://x.com/home',reload(){reloads++;} };
   class ClockDate extends Date { static now() { return now; } }
   const context = vm.createContext({
+    SuperXNativePanel:nativePanelFactory,
     document, window, location, URL, URLSearchParams, AbortController, crypto, Date: ClockDate,
     innerWidth: 1440, innerHeight: 960,
     XGrokCore: { ...core, extractPost: article => {postExtractions++;return article.postData ? ({ ...article.postData }) : null;} }, GrokFirstOverlayLayout: layout,
@@ -3688,4 +3690,14 @@ test('individual subscription stream, usage and permission failures never freeze
 
 test('a running subscription partial survives virtualization and returns as the same paid job',()=>{
   const page=fixture({postCount:1});oauthFeedConfig(page);const request=page.port.sent.find(message=>message.type==='ANALYZE'),card=page.cards()[0],original=page.articles[0];page.port.onMessage.emit({type:'START',requestId:request.requestId});page.port.onMessage.emit({type:'UPDATE',requestId:request.requestId,phase:'verify',text:'Subscription partial before scroll.',usage:{total_tokens:15}});page.flush();const before=page.port.sent.length;original.remove();page.mutate();page.tick(2000);page.port.onMessage.emit({type:'UPDATE',requestId:request.requestId,phase:'verify',text:'Subscription continues while detached.',usage:{total_tokens:24}});page.flush();remountPost(page,original);page.mutate();page.intersect();page.tick(2000);assert.equal(page.cards()[0],card);assert.equal(card.testShadow.querySelector('.answer').textContent,'Subscription continues while detached.');assertTokenCount(card,24);assert.equal(card.testShadow.querySelector('.retry').disabled,true);assert.equal(page.port.sent.slice(before).some(message=>['ANALYZE','CANCEL','CANCEL_IF_QUEUED'].includes(message.type)),false);page.port.onMessage.emit({type:'RESULT',requestId:request.requestId,result:{provider:'oauth',text:'The original subscription job completed.',sources:[],verificationStatus:'completed',usage:{total_tokens:37},model:'grok-4.3'}});page.flush();assert.equal(card.testShadow.querySelector('.answer').textContent,'The original subscription job completed.');assertTokenCount(card,37);assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,1);
+});
+
+test('x-native keeps streamed right-column findings and hides comment generation',()=>{
+  const page=fixture({postCount:1});page.configure({provider:'x-native'});page.intersect();page.tick();
+  const request=page.port.sent.find(message=>message.type==='ANALYZE');assert.ok(request);
+  page.port.onMessage.emit({type:'START',requestId:request.requestId});
+  page.port.onMessage.emit({type:'UPDATE',requestId:request.requestId,text:'Native streamed finding',sources:[],phase:'verify',provider:'x-native',model:'x-web',usageComplete:false});page.flush();
+  const card=page.cards()[0];assert.equal(card.testShadow.querySelector('.answer').textContent,'Native streamed finding');
+  page.port.onMessage.emit({type:'RESULT',requestId:request.requestId,result:{text:'Native final finding',sources:[{url:'https://nasa.gov/',title:'NASA'}],provider:'x-native',model:'x-web',usageComplete:false,verificationStatus:'completed'}});page.flush();
+  assert.equal(card.testShadow.querySelector('.answer').textContent,'Native final finding');assert.equal(card.testShadow.querySelector('.generate-comments').hidden,true);assert.match(card.testShadow.querySelector('.sources').textContent,/NASA/);
 });

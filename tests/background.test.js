@@ -7,6 +7,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const core = require('../extension/feed-core.js');
 const provider = require('../extension/api-provider.js');
+const nativeProvider = require('../extension/native-provider.js');
 const buildProvider = require('../extension/build-provider.js');
 const ui = require('../extension/ui-i18n.js');
 const historyStore = require('../extension/history-store.js');
@@ -82,6 +83,7 @@ function createBackground(options = {}) {
   buildStoreProfiles.set(local.data,buildState);
   const cacheFixture=Object.hasOwn(options,'cache')?{cache:options.cache}:{};
   const session = storage(options.session === null ? cacheFixture : { apiKey: 'session-secret', ...cacheFixture, ...options.session }, { get: options.sessionGet, set: options.sessionSet, remove: options.sessionRemove });
+  const nativeCalls=[];
   const apiCalls = [], commentCalls = [], buildCalls=[], buildCommentCalls=[], buildStatusCalls=[], runtimeMessages = [], createdTabs = [], removedTabs = [], tabMessages = [], deadlines = [], createdWindows = [], removedWindows = [];
   const tabs = new Map([[7, { id: 7, url: 'https://x.com/home', active: true, windowId: 1, status: 'complete' }], ...(options.tabs || [])]);
   const windows = new Map([[1, { id: 1, type: 'normal', focused: true }], ...(options.windows || [])]);
@@ -145,6 +147,7 @@ function createBackground(options = {}) {
   let now = options.now ?? 1800000000000;
   class ClockDate extends Date { static now() { return now; } }
   const context = vm.createContext({
+    SuperXNative:{publicError:nativeProvider.publicError,create(){return {async run(post,settings,callbacks){assert.equal(callbacks.client.port.name,'GROKFIRST_FEED');assert.equal(callbacks.client.port.sender.id,chrome.runtime.id);assert.equal(callbacks.client.port.sender.frameId,0);assert.equal(callbacks.client.tabId,callbacks.client.port.sender.tab.id);const call={post,settings,...callbacks};nativeCalls.push(call);return options.nativeRun?options.nativeRun(call,harness):{text:'Native checked '+post.id,sources:[],provider:'x-native',model:'x-web',usageComplete:false,verificationStatus:'completed',verified:false,searched:false};}};}},
     chrome, XGrokCore: options.retryLimit===undefined?core:{...core,AUTO_RETRY_LIMIT:options.retryLimit}, GrokFirstUI:ui, SuperXKeyStore:options.keyStore||keyStore,SuperXBuildConnectionStore:buildStore,SuperXBuildSetup:setup, SuperXHistoryStore:{...historyStore,create(area){return historyStore.create(area,{now:()=>now});}}, SuperXOAuth:{ALARMS:{poll:'SUPERX_OAUTH_DEVICE_POLL',refresh:'SUPERX_OAUTH_REFRESH'},create(value){oauthChanged=value.onChange;return oauthManager;}}, importScripts() {}, URL, AbortController, DOMException, crypto, Date: ClockDate, TextEncoder, TextDecoder,
     navigator: Object.hasOwn(options, 'navigator') ? options.navigator : { language: 'en-US' },
     SuperXBuild:{publicError:buildProvider.publicError,async close(){if(options.buildClose)await options.buildClose();},async status(input){buildStatusCalls.push(clone(input));return options.buildStatus?options.buildStatus(input):{connected:true,installed:true,available:true,authenticated:true,version:'1.0.60'};},
@@ -166,7 +169,7 @@ function createBackground(options = {}) {
     clearTimeout(timer) { if (timer?.immediate) clearImmediate(timer.immediate); if (timer?.deadline) timer.cancelled = true; }
   });
   const harness = {
-    chrome, permissionState, local, session, alarmCalls,oauthManager,oauthCalls, buildStore,buildState,buildStoreCalls, keyStore:options.keyStore||keyStore, keyStoreState, keyStoreCalls, apiCalls, commentCalls, buildCalls,buildCommentCalls,buildStatusCalls,runtimeMessages, createdTabs, removedTabs, tabMessages, tabs, windows, createdWindows, removedWindows, deadlines,
+    nativeCalls,chrome, permissionState, local, session, alarmCalls,oauthManager,oauthCalls, buildStore,buildState,buildStoreCalls, keyStore:options.keyStore||keyStore, keyStoreState, keyStoreCalls, apiCalls, commentCalls, buildCalls,buildCommentCalls,buildStatusCalls,runtimeMessages, createdTabs, removedTabs, tabMessages, tabs, windows, createdWindows, removedWindows, deadlines,
     now() { return now; },
     advance(ms) { now += ms; },
     advanceRetryTimers(ms) {
@@ -3789,4 +3792,131 @@ test('unknown persisted sources stay closed across normalization and require an 
   const restarted=createBackground({local:first.local.data,session:first.session.data});await restarted.ready();assert.equal((await restarted.message({type:'GET_CONFIG'})).ready,false);
   assert.equal((await restarted.message({type:'SAVE_SETTINGS',settings:{...restarted.local.data.settings,provider:'bad-provider'}})).ok,false);
   await restarted.message({type:'SAVE_SETTINGS',settings:{...restarted.local.data.settings,provider:'api'}});assert.equal((await restarted.message({type:'GET_CONFIG'})).ready,true);assert.equal((await analyze(restarted,restarted.connect(),'explicit-api')).type,'RESULT');
+});
+
+test('x-native config and settings need no credential or search toggle and ignore inactive API model restrictions',async()=>{
+  const bg=createBackground({settings:{provider:'x-native',apiModel:'grok-imagine-image',webSearch:false,xSearch:false},session:null});await bg.ready();
+  const config=await bg.message({type:'GET_CONFIG'});assert.equal(config.ready,true);assert.equal(config.settings.provider,'x-native');assert.equal(config.credentialIdentity,'');assert.equal(bg.apiCalls.length,0);
+  assert.equal((await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,provider:'x-native',webSearch:false,xSearch:false}})).ok,true);
+  const port=bg.connect();const value=await analyze(bg,port,'native-keyless',990);assert.equal(value.type,'RESULT');assert.equal(value.result.model,'x-web');assert.equal(value.result.usageComplete,false);assert.equal(value.result.verified,false);assert.equal(value.result.searched,false);assert.equal(bg.nativeCalls.length,1);assert.equal(bg.apiCalls.length,0);assert.equal(bg.buildCalls.length,0);
+});
+
+test('native events on the verified FEED port bypass the ordinary request handler',async()=>{
+  const bg=createBackground({settings:{provider:'x-native'}});await bg.ready();const port=bg.connect();await tick();const count=port.messages.length;
+  const event={type:'NATIVE_EVENT',kind:'RESULT',nonce:'old-nonce',text:'Unsolicited answer'};
+  Object.defineProperty(event,'requestId',{get(){throw new Error('Native event body must not be inspected by FEED handler');}});
+  assert.doesNotThrow(()=>port.send(event));await tick();assert.equal(port.messages.length,count);assert.equal(bg.nativeCalls.length,0);assert.equal(bg.apiCalls.length,0);
+  const invalid=bg.connect({name:'SUPERX_NATIVE:old',sender:{id:bg.chrome.runtime.id,url:'https://x.com/home',frameId:0,tab:{id:7}}});assert.equal(invalid.disconnected,true);
+});
+
+test('native drafts and comments immediately fail before input validation or provider access',async()=>{
+  const bg=createBackground({settings:{provider:'x-native',enabled:false},session:null});await bg.ready();const port=bg.connect();
+  for(const type of ['ANALYZE_DRAFT','GENERATE_COMMENTS']){
+    port.send({type,requestId:type,draft:{text:'PRIVATE'},post:null});await until(()=>port.messages.some(m=>m.requestId===type));
+    const result=port.messages.find(m=>m.requestId===type);assert.equal(result.code,'X_NATIVE_UNSUPPORTED');assert.equal(result.type,type==='GENERATE_COMMENTS'?'COMMENT_ERROR':'ERROR');
+  }
+  assert.equal(bg.nativeCalls.length,0);assert.equal(bg.apiCalls.length,0);assert.equal(bg.commentCalls.length,0);
+});
+
+test('native repeats bypass cache and answer history while preserving visits and streaming metadata',async()=>{
+  const bg=createBackground({settings:{provider:'x-native'},session:null,nativeRun:async call=>{
+    call.onUpdate({text:'Native partial',sources:[],model:'x-web',provider:'x-native',usageComplete:false,verificationStatus:'pending',verified:false,searched:false});
+    return {text:'Native account answer',sources:[],model:'x-web',provider:'x-native',usageComplete:false,verificationStatus:'completed',verified:false,searched:false};
+  }});await bg.ready();const port=bg.connect();await visitHistory(bg,port,[991]);
+  for(const id of ['native-first','native-second']){const value=await analyze(bg,port,id,991);assert.equal(value.cached,false);}
+  assert.equal(bg.nativeCalls.length,2);await tick();assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+  const history=await bg.message({type:'GET_HISTORY'});assert.equal(history.entries.length,1);assert.equal(history.entries[0].visits,1);assert.equal(history.entries[0].analysis,undefined);assert.equal(bg.local.data.superxHistory[0].analysis,undefined);
+  assert.equal(JSON.stringify(bg.session.data).includes('Native account answer'),false);assert.equal(bg.session.data.apiRequestDiagnostics,undefined);
+  const update=port.messages.find(m=>m.type==='UPDATE');assert.equal(update.model,'x-web');assert.equal(update.usageComplete,false);assert.equal(update.provider,'x-native');assert.equal(update.verified,false);assert.equal(update.searched,false);
+});
+
+test('native cannot read a preexisting native cache entry or other-source history answer',async()=>{
+  const bg=createBackground({settings:{provider:'api'}});await bg.ready();const port=bg.connect();await visitHistory(bg,port,[992]);await analyze(bg,port,'seed-api',992);await until(()=>bg.local.data.superxHistory[0].analysis);
+  await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,provider:'x-native'}});
+  assert.equal((await bg.message({type:'GET_HISTORY'})).entries[0].analysis,undefined);
+  const seed=Object.values(bg.session.data.cache)[0];const nativeCache=Object.fromEntries(Object.entries(bg.session.data.cache).map(([key,value])=>{const parts=JSON.parse(key);parts[1]='x-native';return [JSON.stringify(parts),{...value,provider:'x-native',text:'Stale X account answer'}];}));
+  const restarted=createBackground({settings:{provider:'x-native'},cache:nativeCache,session:null});await restarted.ready();const next=await analyze(restarted,restarted.connect(),'fresh-native',992);assert.equal(next.cached,false);assert.equal(restarted.nativeCalls.length,1);assert.notEqual(next.result.text,seed.text);assert.equal(Object.keys(restarted.session.data.cache||{}).length,0);
+});
+
+test('native concurrency is fixed at ten and cancellation retains its slot until cleanup settles',async()=>{
+  const slow=Array.from({length:10},()=>deferred());
+  const bg=createBackground({settings:{provider:'x-native',apiConcurrency:1},nativeRun:async(call,h)=>h.nativeCalls.length<=10?slow[h.nativeCalls.length-1].promise:{text:'Next native answer',provider:'x-native',verificationStatus:'completed'}});await bg.ready();const port=bg.connect();
+  for(let i=0;i<10;i++)port.send({type:'ANALYZE',requestId:'native-running-'+i,post:post(2000+i)});
+  await until(()=>bg.nativeCalls.length===10);port.send({type:'ANALYZE',requestId:'native-waiting',post:post(2010)});await tick();assert.equal(bg.nativeCalls.length,10);
+  port.send({type:'CANCEL',requestId:'native-running-0'});await until(()=>bg.nativeCalls[0].signal.aborted);assert.equal(bg.nativeCalls.length,10);assert.equal(bg.nativeCalls.slice(1).some(call=>call.signal.aborted),false);
+  slow[0].reject(Object.assign(new Error('cleanup finished'),{code:'CANCELLED'}));await until(()=>port.messages.some(m=>m.requestId==='native-waiting'&&m.type==='RESULT'));assert.equal(bg.nativeCalls.length,11);assert.equal(port.messages.some(m=>m.requestId==='native-running-0'&&m.type==='RESULT'),false);
+  for(let i=1;i<10;i++)slow[i].resolve({text:'Sibling '+i,provider:'x-native',verificationStatus:'completed'});
+  await until(()=>port.messages.filter(m=>m.type==='RESULT').length===10);assert.equal(bg.nativeCalls.length,11);
+});
+
+test('native fixed errors and deadline failures never automatically retry or write partial answers',async()=>{
+  for(const timedOut of [false,true]){
+    const slow=deferred();const bg=createBackground({settings:{provider:'x-native'},manualRetryTimers:true,nativeRun:async call=>{
+      call.onUpdate({text:'Private native partial',sources:[],provider:'x-native',verificationStatus:'pending'});
+      if(timedOut){call.signal.addEventListener('abort',()=>slow.reject(call.signal.reason),{once:true});return slow.promise;}
+      throw Object.assign(new Error('Untrusted webpage error PRIVATE'),{code:'X_NATIVE_PAGE_ERROR',requestDiagnostics:{private:'data'}});
+    }});await bg.ready();const port=bg.connect();await visitHistory(bg,port,[995]);port.send({type:'ANALYZE',requestId:'native-failure',post:post(995)});await until(()=>bg.nativeCalls.length===1);if(timedOut)bg.expireDeadline(150000);
+    await until(()=>port.messages.some(m=>m.type==='ERROR'));bg.advanceRetryTimers(3000);await tick();assert.equal(bg.nativeCalls.length,1);assert.equal(port.messages.some(m=>m.type==='RETRY_WAIT'),false);
+    const error=port.messages.find(m=>m.type==='ERROR');assert.equal(error.retryAttempts,0);assert.equal(error.error.includes('PRIVATE'),false);assert.equal(bg.session.data.apiRequestDiagnostics,undefined);assert.equal(bg.local.data.superxHistory[0].analysis,undefined);assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+  }
+});
+
+test('inactive API credential mutation neither cancels native work nor closes its ready gate',async()=>{
+  const slow=deferred();const bg=createBackground({settings:{provider:'x-native'},session:null,nativeRun:()=>slow.promise});await bg.ready();const port=bg.connect();
+  port.send({type:'ANALYZE',requestId:'native-during-key-change',post:post(996)});await until(()=>bg.nativeCalls.length===1);
+  assert.equal((await bg.message({type:'SAVE_KEY',apiKey:'invented-inactive-key',remember:false})).ok,true);
+  assert.equal(bg.nativeCalls[0].signal.aborted,false);assert.equal((await bg.message({type:'GET_CONFIG'})).ready,true);
+  slow.resolve({text:'Native answer after Key change',provider:'x-native',verificationStatus:'completed'});
+  await until(()=>port.messages.some(m=>m.requestId==='native-during-key-change'&&m.type==='RESULT'));assert.equal(bg.apiCalls.length,0);
+});
+
+test('native account or unknown API rejection drains queued jobs but preserves the other nine running tasks',async()=>{
+  for(const code of ['X_NATIVE_LOGIN_REQUIRED','X_NATIVE_USAGE_LIMIT','X_NATIVE_PAGE_ERROR','X_NATIVE_UNAVAILABLE']){
+    const slow=Array.from({length:10},()=>deferred());const bg=createBackground({settings:{provider:'x-native'},nativeRun:async(call,h)=>h.nativeCalls.length<=10?slow[h.nativeCalls.length-1].promise:{text:'Recovered native answer',provider:'x-native',verificationStatus:'completed'}});
+    await bg.ready();const port=bg.connect();
+    for(let i=0;i<10;i++)port.send({type:'ANALYZE',requestId:'account-running-'+i,post:post(2100+i)});
+    await until(()=>bg.nativeCalls.length===10);port.send({type:'ANALYZE',requestId:'account-waiting',post:post(2110)});await until(()=>port.messages.some(m=>m.requestId==='account-waiting'&&m.type==='QUEUED'));
+    slow[0].reject(Object.assign(new Error('account unavailable'),{code}));await until(()=>port.messages.some(m=>m.requestId==='account-waiting'&&m.type==='ERROR'));
+    assert.equal(bg.nativeCalls.length,10);assert.equal((await bg.message({type:'GET_CONFIG'})).ready,false);assert.equal(bg.nativeCalls.slice(1).some(call=>call.signal.aborted),false);
+    for(let i=1;i<10;i++)slow[i].resolve({text:'Sibling '+i,provider:'x-native',verificationStatus:'completed'});
+    await until(()=>port.messages.filter(m=>m.type==='RESULT').length===9);assert.equal(bg.nativeCalls.length,10);
+    const paused=await analyze(bg,port,'account-paused',2111);assert.equal(paused.code,code);assert.equal(bg.nativeCalls.length,10);
+    await bg.message({type:'SAVE_SETTINGS',settings:bg.local.data.settings});assert.equal((await bg.message({type:'GET_CONFIG'})).ready,true);
+    assert.equal((await analyze(bg,port,'account-recovered',2112)).type,'RESULT');assert.equal(bg.nativeCalls.length,11);
+  }
+});
+
+test('native.run receives the verified requesting client and refuses forged FEED connections',async()=>{
+  const bg=createBackground({settings:{provider:'x-native'}});await bg.ready();const first=bg.connect();
+  const second=bg.connect({sender:{id:bg.chrome.runtime.id,frameId:0,url:'https://x.com/home',tab:{id:8}}});
+  await analyze(bg,second,'native-bound-second',1001);assert.equal(bg.nativeCalls[0].client.port,second);assert.equal(bg.nativeCalls[0].client.tabId,8);assert.notEqual(bg.nativeCalls[0].client.port,first);
+  const forged=bg.connect({sender:{id:'another-extension',frameId:0,url:'https://x.com/home',tab:{id:7}}});assert.equal(forged.disconnected,true);forged.send({type:'ANALYZE',requestId:'forged-native',post:post(1002)});await tick();assert.equal(bg.nativeCalls.length,1);
+});
+
+for(const initiating of ['none','cancel','timeout'])test('native unconfirmed cleanup overrides '+initiating+' and drains queued work without retry',async()=>{
+  const slow=Array.from({length:10},()=>deferred());let blocked=true;
+  const bg=createBackground({settings:{provider:'x-native',apiConcurrency:8},manualRetryTimers:true,nativeRun:async(call,h)=>{
+    if(h.nativeCalls.length<=10)return slow[h.nativeCalls.length-1].promise;
+    if(blocked)throw Object.assign(new Error('PRIVATE ERROR'),{code:'X_NATIVE_CANCEL_UNCONFIRMED'});
+    return {provider:'x-native',text:'After confirmed cleanup',verificationStatus:'completed'};
+  }});await bg.ready();const port=bg.connect();
+  port.send({type:'ANALYZE',requestId:'native-unconfirmed',post:post(1003)});await until(()=>bg.nativeCalls.length===1);
+  for(let i=1;i<10;i++)port.send({type:'ANALYZE',requestId:'native-sibling-'+i,post:post(2200+i)});
+  await until(()=>bg.nativeCalls.length===10);
+  port.send({type:'ANALYZE',requestId:'native-queued',post:post(1004)});await until(()=>port.messages.some(m=>m.requestId==='native-queued'&&m.type==='QUEUED'));
+  if(initiating==='cancel')port.send({type:'CANCEL',requestId:'native-unconfirmed'});
+  if(initiating==='timeout')bg.expireDeadline(150000);
+  slow[0].reject(Object.assign(new Error('PRIVATE CLEANUP FAILURE'),{code:'X_NATIVE_CANCEL_UNCONFIRMED',nativeStage:'panel-close'}));
+  await until(()=>port.messages.some(m=>m.requestId==='native-queued'&&m.type==='ERROR'));
+  await until(()=>port.messages.some(m=>m.requestId==='native-unconfirmed'&&m.type==='ERROR'));
+  for(const id of ['native-unconfirmed','native-queued']){
+    const failure=port.messages.find(m=>m.requestId===id&&m.type==='ERROR');assert.equal(failure.code,'X_NATIVE_CANCEL_UNCONFIRMED');assert.match(failure.error,/无法确认/);assert.equal(failure.error.includes('PRIVATE'),false);assert.equal(failure.retryAttempts,0);
+  }
+  bg.advanceRetryTimers(3000);await tick();assert.equal(bg.nativeCalls.length,10);assert.equal(port.messages.some(m=>m.type==='RETRY_WAIT'),false);
+  assert.equal(bg.nativeCalls.slice(1).some(call=>call.signal.aborted),false);
+  for(let i=1;i<10;i++)slow[i].resolve({text:'Other active task '+i,provider:'x-native',verificationStatus:'completed'});
+  await until(()=>port.messages.filter(m=>m.type==='RESULT').length===9);assert.equal(bg.apiCalls.length,0);
+  await bg.message({type:'SAVE_SETTINGS',settings:bg.local.data.settings});
+  const stillBlocked=await analyze(bg,port,'native-still-blocked',1005);assert.equal(stillBlocked.code,'X_NATIVE_CANCEL_UNCONFIRMED');
+  blocked=false;const recovered=await analyze(bg,port,'native-cleanup-confirmed',1006);assert.equal(recovered.type,'RESULT');
 });

@@ -1996,6 +1996,93 @@
     "ru": ["{label} (Рекомендуется)","Для просмотра ленты подходит Grok 4.3 без рассуждений: ответы обычно быстрее и короче, расход токенов ниже."],
     "hi": ["{label} (अनुशंसित)","फ़ीड देखते समय Grok 4.3 बिना तर्क-विचार के उपयुक्त है: आम तौर पर तेज़, संक्षिप्त जवाब और कम टोकन।"]
   });
+  section(["native.label", "native.help", "native.login", "native.failed", "native.unsupported"], {
+    "en": [
+        "X built-in Grok",
+        "Uses the current X page to initialize up to 10 independent checks in parallel. No page switching. Uses your web allowance and creates chat history. No API Key or Build. Uses Fast and original API Markdown; no Token counts. Published posts only.",
+        "Sign in to X, then retry.",
+        "X Grok did not complete. Check the X Grok page and retry manually; requests are not replayed.",
+        "This connection checks published posts only."
+    ],
+    "zh-CN": [
+        "X 内置 Grok",
+        "在当前 X 页面内初始化连接，最多 10 路独立并发核查，全程不切换页面。消耗网页额度并产生聊天历史，无需 API Key 或 Build。固定使用 Fast，直接渲染接口原始 Markdown，不提供 Token 统计。仅支持已发布帖子。",
+        "请先登录 X，再重试。",
+        "X 内置 Grok 未完成，请检查 X Grok 页面后手动重试，不会自动重发。",
+        "此连接仅核查已发布帖子。"
+    ],
+    "zh-TW": [
+        "X 內建 Grok",
+        "在目前 X 頁面內初始化連線，最多 10 路獨立並行查核，不切換頁面。消耗網頁額度並產生聊天紀錄，無需 API Key 或 Build。固定使用 Fast，直接呈現介面原始 Markdown，不提供 Token 統計。僅支援已發布貼文。",
+        "請先登入 X，再重試。",
+        "X 內建 Grok 未完成，請檢查 X Grok 頁面後手動重試，不會自動重送。",
+        "此連線僅查核已發布貼文。"
+    ],
+    "ja": [
+        "X 内蔵 Grok",
+        "現在の X ページで接続を初期化し、最大10件を並行して確認します。Web利用枠を消費し、チャット履歴が残ります。API Key・Build不要。Fast と API の元の Markdown を使用し、トークン数は不明です。公開済み投稿のみ。",
+        "X にログインして再試行してください。",
+        "X Grok が完了しませんでした。X の画面を確認して手動で再試行してください。自動再送はしません。",
+        "公開済み投稿のみ確認できます。"
+    ],
+    "ko": [
+        "X 내장 Grok",
+        "현재 X 페이지에서 연결을 초기화하고 최대 10개를 병렬로 확인합니다. 웹 사용량이 소모되고 채팅 기록이 남습니다. API Key나 Build가 필요 없습니다. Fast와 API 원본 Markdown을 사용하며 토큰 수는 제공하지 않습니다. 게시된 글만 지원합니다.",
+        "X에 로그인한 후 다시 시도하세요.",
+        "X Grok이 완료되지 않았습니다. X 페이지를 확인하고 수동으로 다시 시도하세요. 자동 재전송하지 않습니다.",
+        "게시된 글만 확인할 수 있습니다."
+    ],
+    "es": [
+        "Grok integrado en X",
+        "Inicia conexiones en la página X actual y verifica hasta 10 publicaciones en paralelo. Consume tu cuota web y crea historial. Sin API Key ni Build. Usa Fast y Markdown original de la API; sin recuento de Tokens. Solo publicaciones.",
+        "Inicia sesión en X y reintenta.",
+        "X Grok no terminó. Revisa su página y reintenta manualmente; no se reenvía automáticamente.",
+        "Esta conexión solo verifica publicaciones existentes."
+    ],
+    "fr": [
+        "Grok intégré à X",
+        "Initialise les connexions sur la page X actuelle et vérifie jusqu’à 10 publications en parallèle. Consomme le quota web et crée un historique. Sans API Key ni Build. Utilise Fast et le Markdown original de l’API ; aucun comptage de Tokens. Publications uniquement.",
+        "Connectez-vous à X puis réessayez.",
+        "X Grok n’a pas terminé. Vérifiez sa page et réessayez manuellement ; aucun renvoi automatique.",
+        "Cette connexion vérifie uniquement les publications existantes."
+    ],
+    "de": [
+        "In X integriertes Grok",
+        "Initialisiert Verbindungen auf der aktuellen X-Seite für bis zu 10 parallele Prüfungen. Verbraucht Webkontingent und erstellt Chatverlauf. Kein API Key oder Build. Verwendet Fast und originales API-Markdown; keine Tokenzählung. Nur veröffentlichte Beiträge.",
+        "Bei X anmelden und erneut versuchen.",
+        "X Grok wurde nicht fertig. X-Seite prüfen und manuell erneut versuchen; keine automatische Wiederholung.",
+        "Diese Verbindung prüft nur veröffentlichte Beiträge."
+    ],
+    "pt": [
+        "Grok integrado no X",
+        "Inicializa conexões na página atual do X e verifica até 10 publicações em paralelo. Consome a quota web e cria histórico. Sem API Key ou Build. Usa Fast e Markdown original da API; sem contagem de Tokens. Apenas publicações.",
+        "Entre no X e tente novamente.",
+        "O X Grok não terminou. Confira a página e tente manualmente; sem reenvio automático.",
+        "Esta conexão verifica apenas publicações existentes."
+    ],
+    "ar": [
+        "Grok المدمج في X",
+        "يهيئ الاتصالات داخل صفحة X الحالية لفحص ما يصل إلى 10 منشورات بالتوازي. يستهلك حصة الويب وينشئ سجل محادثات. لا يحتاج API Key أو Build. يستخدم Fast ونص Markdown الأصلي من API؛ لا تتوفر إحصاءات الرموز. للمنشورات المنشورة فقط.",
+        "سجّل الدخول إلى X ثم أعد المحاولة.",
+        "لم يكمل X Grok الطلب. تحقق من صفحته وأعد المحاولة يدويًا؛ لا توجد إعادة إرسال تلقائية.",
+        "هذا الاتصال يفحص المنشورات المنشورة فقط."
+    ],
+    "ru": [
+        "Встроенный Grok в X",
+        "Создаёт подключения на текущей странице X для проверки до 10 публикаций параллельно. Расходует веб-лимит и создаёт историю чатов. Без API Key и Build. Использует Fast и исходный Markdown API; счётчика токенов нет. Только опубликованные записи.",
+        "Войдите в X и повторите.",
+        "X Grok не завершил ответ. Проверьте страницу и повторите вручную; автоматической отправки нет.",
+        "Это подключение проверяет только опубликованные записи."
+    ],
+    "hi": [
+        "X का अंतर्निहित Grok",
+        "मौजूदा X पेज पर कनेक्शन शुरू करके एक साथ अधिकतम 10 पोस्ट जाँचता है। वेब सीमा खर्च होती है और चैट इतिहास बनता है। API Key या Build नहीं चाहिए। Fast और API का मूल Markdown उपयोग होता है; टोकन गणना उपलब्ध नहीं है। केवल प्रकाशित पोस्ट।",
+        "X में लॉगिन करके फिर प्रयास करें।",
+        "X Grok पूरा नहीं हुआ। उसका पेज जाँचें और स्वयं फिर प्रयास करें; अनुरोध अपने आप दोबारा नहीं भेजा जाएगा।",
+        "यह कनेक्शन केवल प्रकाशित पोस्ट जाँचता है।"
+    ]
+});
+  section(["native.busy","native.cleanup"], {"en": ["Your Grok panel is open. Collapse it, then retry.", "Grok panel cleanup is unconfirmed. Close it or refresh X before retrying."], "zh-CN": ["你的 Grok 面板已打开，请先收起，再重试。", "尚未确认 Grok 面板已收起，请关闭它或刷新 X 后重试。"], "zh-TW": ["你的 Grok 面板已開啟，請先收起，再重試。", "尚未確認 Grok 面板已收起，請關閉它或重新整理 X 後重試。"], "ja": ["Grok パネルを閉じてから再試行してください。", "Grok パネルの終了を確認できません。閉じるか X を再読み込みしてください。"], "ko": ["Grok 패널을 닫은 후 다시 시도하세요.", "Grok 패널 종료를 확인할 수 없습니다. 닫거나 X를 새로고침하세요."], "es": ["Cierra tu panel Grok y reintenta.", "No se confirmó el cierre de Grok. Ciérralo o recarga X."], "fr": ["Fermez votre panneau Grok puis réessayez.", "Fermeture de Grok non confirmée. Fermez-le ou actualisez X."], "de": ["Grok-Panel schließen und erneut versuchen.", "Grok-Schließen nicht bestätigt. Panel schließen oder X neu laden."], "pt": ["Feche o painel Grok e tente novamente.", "Fecho do Grok não confirmado. Feche-o ou atualize o X."], "ar": ["أغلق لوحة Grok ثم أعد المحاولة.", "لم يتأكد إغلاق Grok. أغلق اللوحة أو حدّث X."], "ru": ["Закройте панель Grok и повторите.", "Закрытие Grok не подтверждено. Закройте панель или обновите X."], "hi": ["Grok पैनल बंद करके फिर प्रयास करें।", "Grok बंद होने की पुष्टि नहीं हुई। पैनल बंद करें या X रीफ़्रेश करें।"]});
   const aliases = {'common.auto':'lang.auto','common.failed':'status.failed','tooltip.collapse':'common.collapse','tooltip.expand':'common.expand','build.imageUnavailable':'draft.imageUnavailable','build.imageLimit':'error.mediaLimit'};
   for (const language of SUPPORTED_LANGUAGES) {
     for (const [key, source] of Object.entries(aliases)) catalog[language][key] = catalog[language][source];

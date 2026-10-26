@@ -632,7 +632,9 @@
       return createState(editor);
     }
     function scan(){
-      if(disposed||scanning)return;scanning=true;
+      if(disposed||scanning)return;
+      if(config.settings.provider==='x-native'){for(const binding of [...bindings.values()])detach(binding);return;}
+      scanning=true;
       try{
         captureThread();
         const groups=new Map();
