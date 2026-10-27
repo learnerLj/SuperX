@@ -1,76 +1,31 @@
 import type {
-  Post as SharedPost,
+  Post,
   Settings,
   AnalysisResult,
   Source,
   Update,
   ReasoningEffort,
+  FailureDetails,
+  Usage,
+  GenerationMetadata as Metadata,
+  ProviderDiagnostics as RequestDiagnostics,
+  ModelEntry,
+  ProviderAuthorization as Authorization,
 } from "../shared/contracts";
-export type { Settings, AnalysisResult, Source, Update, ReasoningEffort };
-/** Additional draft/context fields already consumed by the wire providers. */
-export interface Post extends Omit<
-  SharedPost,
-  "context" | "quotedContext" | "threadContext"
-> {
-  mode?: "post" | "reply";
-  username?: string;
-  hasUncheckedMedia?: boolean;
-  context?: Post;
-  quotedContext?: Post[];
-  threadContext?: Post[];
-}
-export interface FailureDetails {
-  code?: string;
-  stage?: string;
-  reason?: string;
-  errorCode?: string;
-  httpStatus?: number;
-  providerCode?: string;
-}
-export interface RequestDiagnostics {
-  failureOrigin?: string;
-  requestId?: string;
-  responseId?: string;
-  requestedModel?: string;
-  model?: string;
-  providerMessage?: string;
-  startedAt?: number;
-  failedAt?: number;
-  elapsedMs?: number;
-}
-export interface Usage {
-  input_tokens?: number;
-  output_tokens?: number;
-  total_tokens?: number;
-  num_sources_used?: number;
-  num_server_side_tools_used?: number;
-  cost_in_usd_ticks?: number;
-  input_tokens_details?: {
-    cached_tokens?: number;
-    text_tokens?: number;
-    image_tokens?: number;
-    audio_tokens?: number;
-  };
-  output_tokens_details?: { reasoning_tokens?: number; audio_tokens?: number };
-  server_side_tool_usage_details?: {
-    web_search_calls?: number;
-    x_search_calls?: number;
-    x_posts_fetched?: number;
-    x_users_fetched?: number;
-    code_interpreter_calls?: number;
-    file_search_calls?: number;
-    mcp_calls?: number;
-    document_search_calls?: number;
-    image_generation_calls?: number;
-  };
-}
-export interface Metadata {
-  usage?: Usage;
-  model?: string;
-  usageComplete?: boolean;
-  usageByStage?: Partial<Record<string, Usage>>;
-  modelByStage?: Partial<Record<string, string>>;
-}
+export type {
+  Post,
+  Settings,
+  AnalysisResult,
+  Source,
+  Update,
+  ReasoningEffort,
+  FailureDetails,
+  Usage,
+  Metadata,
+  RequestDiagnostics,
+  ModelEntry,
+  Authorization,
+};
 export interface StageResult extends Metadata {
   text: string;
   sources?: Source[];
@@ -111,12 +66,6 @@ export interface HostMessage extends Metadata {
   modelCatalog?: ModelEntry[];
   errorCode?: string;
 }
-export interface ModelEntry {
-  id: string;
-  name?: string;
-  available?: boolean;
-  efforts?: string[];
-}
 /** Browser-safe subset of the existing core consumed by providers. */
 export type CoreContract = Pick<
   import("../shared/feed-core").API,
@@ -135,10 +84,6 @@ export type CoreContract = Pick<
   | "apiFailureProviderCode"
   | "sanitizedRequestDiagnostics"
 >;
-export interface Authorization {
-  getAccessToken(signal?: AbortSignal): Promise<string>;
-  onUnauthorized?(rejectedToken: string, signal?: AbortSignal): Promise<string>;
-}
 export interface CallOptions {
   signal?: AbortSignal;
   onUpdate?: (value: Update) => void;

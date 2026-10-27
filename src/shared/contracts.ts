@@ -40,6 +40,8 @@ export interface Settings {
   nativeAccount?: string;
   task?: "comments" | "draft";
 }
+export type SettingsInput = { [K in keyof Settings]?: unknown };
+
 export interface PostImage {
   url: string;
   alt?: string;
@@ -57,6 +59,10 @@ export interface Post {
   textTruncated?: boolean;
   snapshotOnly?: boolean;
   kind?: "draft";
+  mode?: "post" | "reply";
+  username?: string;
+  hasUncheckedMedia?: boolean;
+  isPromoted?: boolean;
   images?: PostImage[];
   quotedContext?: Post[];
   context?: Post;
@@ -81,20 +87,95 @@ export interface Source {
   url: string;
   title: string;
 }
-export interface ResultMetadata {
-  provider?: ProviderId;
+/** Token/cost fields retained from provider responses and persisted history. */
+export interface UsageTotals {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  num_sources_used?: number;
+  num_server_side_tools_used?: number;
+  cost_in_usd_ticks?: number;
+}
+export interface Usage extends UsageTotals {
+  input_tokens_details?: {
+    cached_tokens?: number;
+    text_tokens?: number;
+    image_tokens?: number;
+    audio_tokens?: number;
+  };
+  output_tokens_details?: { reasoning_tokens?: number; audio_tokens?: number };
+  server_side_tool_usage_details?: {
+    web_search_calls?: number;
+    x_search_calls?: number;
+    x_posts_fetched?: number;
+    x_users_fetched?: number;
+    code_interpreter_calls?: number;
+    file_search_calls?: number;
+    mcp_calls?: number;
+    document_search_calls?: number;
+    image_generation_calls?: number;
+  };
+}
+export interface GenerationMetadata {
+  usage?: Usage;
   model?: string;
   usageComplete?: boolean;
+  usageByStage?: Partial<Record<string, Usage>>;
+  modelByStage?: Partial<Record<string, string>>;
+}
+export interface FailureDetails {
+  code?: string;
+  stage?: string;
+  reason?: string;
+  errorCode?: string;
+  httpStatus?: number;
+  providerCode?: string;
+}
+/** Validated diagnostics emitted by the shared sanitizer. */
+export interface RequestDiagnostics {
+  failureOrigin: "http" | "stream" | "network";
+  transportStatus?: number;
+  requestId?: string;
+  responseId?: string;
+  providerMessage?: string;
+  startedAt?: number;
+  failedAt?: number;
+  elapsedMs?: number;
+  model?: string;
+  requestedModel?: string;
+  requestedEffort?: ReasoningEffort;
+}
+/** Provider observations before diagnostic normalization. */
+export type ProviderDiagnostics = Partial<
+  Omit<RequestDiagnostics, "failureOrigin">
+> & {
+  failureOrigin?: string;
+};
+export interface ModelEntry {
+  id: string;
+  name?: string;
+  available?: boolean;
+  efforts?: string[];
+}
+export interface ResultMetadata extends GenerationMetadata {
+  provider?: ProviderId;
   completedAt?: number;
   [field: string]: unknown;
 }
-export interface AnalysisResult extends ResultMetadata {
+export interface AnalysisResult<
+  Diagnostics extends ProviderDiagnostics = RequestDiagnostics,
+> extends ResultMetadata {
   text: string;
   sources?: Source[];
   /** Private providers and older cache entries retain their reported status strings. */
   verificationStatus?: string;
   verified?: boolean;
   searched?: boolean;
+  verificationStart?: number;
+  verificationFailure?: FailureDetails;
+  requestDiagnostics?: Diagnostics;
+  apiVerification?: string;
+  warning?: string;
 }
 export interface CommentsResult extends ResultMetadata {
   comments: string[];
@@ -128,9 +209,15 @@ export interface ProviderRequest {
   analysis?: AnalysisResult;
 }
 export interface Authorization {
-  getAccessToken(): Promise<string>;
-  onUnauthorized(rejectedAccessToken: string): Promise<string>;
+  getAccessToken(signal?: AbortSignal): Promise<string>;
+  onUnauthorized(
+    rejectedAccessToken: string,
+    signal?: AbortSignal,
+  ): Promise<string>;
 }
+/** Direct provider callers may omit automatic credential recovery. */
+export type ProviderAuthorization = Omit<Authorization, "onUnauthorized"> &
+  Partial<Pick<Authorization, "onUnauthorized">>;
 export interface BuildConnection {
   port: number;
   secret: string;
@@ -156,7 +243,7 @@ export interface APITransport {
     settings: Settings,
     key: string | undefined,
     callbacks: Callbacks,
-  ): Promise<AnalysisResult>;
+  ): Promise<AnalysisResult<ProviderDiagnostics>>;
   generateComments(
     post: Post,
     settings: Settings,
@@ -170,7 +257,7 @@ export interface BuildTransport {
     post: Post,
     settings: Settings,
     callbacks: Callbacks & { connection: BuildConnection },
-  ): Promise<AnalysisResult>;
+  ): Promise<AnalysisResult<ProviderDiagnostics>>;
   generateComments(
     post: Post,
     settings: Settings,
@@ -183,7 +270,7 @@ export interface NativeTransport {
     post: Post,
     settings: Settings,
     callbacks: Callbacks & { client: FeedClient },
-  ): Promise<AnalysisResult>;
+  ): Promise<AnalysisResult<ProviderDiagnostics>>;
   publicError(error: unknown): PublicError;
 }
 export interface AdapterDependencies {
@@ -204,5 +291,5 @@ export interface ProviderAdapter {
   run(
     request: ProviderRequest,
     context: ExecutionContext,
-  ): Promise<AnalysisResult | CommentsResult>;
+  ): Promise<AnalysisResult<ProviderDiagnostics> | CommentsResult>;
 }

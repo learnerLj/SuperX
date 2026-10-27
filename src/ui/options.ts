@@ -7,7 +7,7 @@ import type {
   BuildStatus,
   ErrorShape,
 } from "./state-types";
-import type { FailureDetails } from "../providers/types";
+import type { FailureDetails } from "../shared/contracts";
 interface OAuthView {
   state: string;
   connected: boolean;

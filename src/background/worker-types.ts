@@ -1,5 +1,5 @@
 import type {
-  Post as SharedPost,
+  Post,
   PostImage,
   Settings,
   ProviderId,
@@ -7,12 +7,18 @@ import type {
   AnalysisResult,
   Update,
   ResultMetadata,
+  SettingsInput,
+  GenerationMetadata as Metadata,
+  Usage,
+  FailureDetails,
+  RequestDiagnostics,
+  ProviderDiagnostics,
 } from "../shared/contracts";
-import type { Metadata, Usage, FailureDetails } from "../providers/types";
-import type { RequestDiagnostics } from "../shared/feed-core";
 import type { Ticket } from "./history-store";
 export type {
+  Post,
   Settings,
+  SettingsInput,
   ProviderId,
   Source,
   PostImage,
@@ -24,14 +30,6 @@ export type {
   Update,
   ResultMetadata,
 };
-export interface Post extends SharedPost {
-  mode?: "post" | "reply";
-  username?: string;
-  hasUncheckedMedia?: boolean;
-  context?: Post;
-  quotedContext?: Post[];
-  threadContext?: Post[];
-}
 export interface RawPost {
   id?: unknown;
   url?: unknown;
@@ -54,9 +52,6 @@ export interface RawImage {
   url?: unknown;
   alt?: unknown;
 }
-export type SettingsInput = {
-  [K in keyof Settings]?: unknown;
-};
 export interface WorkerMessage {
   type: string;
   requestId?: unknown;
@@ -97,21 +92,13 @@ export interface BuildStatus {
   errorCode?: string;
   busy?: boolean;
 }
-export interface Result extends Metadata, ResultMetadata {
-  text?: string;
+/** Worker updates and partial failures may precede a complete analysis. */
+export interface Result extends Partial<AnalysisResult<RequestDiagnostics>> {
   comments?: string[];
-  sources?: Source[];
-  verificationStatus?: string;
-  warning?: string;
-  provider?: ProviderId;
-  verified?: boolean;
-  searched?: boolean;
-  completedAt?: number;
-  apiVerification?: string;
-  verificationStart?: number;
-  verificationFailure?: FailureDetails;
-  requestDiagnostics?: RequestDiagnostics;
 }
+/** Provider and partial results before the worker normalizes metadata. */
+export type ProviderResult = Partial<AnalysisResult<ProviderDiagnostics>> &
+  Pick<Result, "comments">;
 export type SanitizedAnalysis = {
   text: string;
   verificationStatus: string;

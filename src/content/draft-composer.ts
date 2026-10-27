@@ -1,8 +1,12 @@
 import type { Settings, Source, PostImage } from "../shared/contracts";
 import type { Post } from "../shared/contracts";
-type ContextPost = Post & { username?: string; isPromoted?: boolean };
+type ContextPost = Post;
 type ThreadPost = ContextPost & { id: string };
-import type { Usage, FailureDetails, Metadata } from "../providers/types";
+import type {
+  Usage,
+  FailureDetails,
+  GenerationMetadata as Metadata,
+} from "../shared/contracts";
 import type { ControlMessage } from "../ui/state-types";
 export interface Options {
   document?: Document;

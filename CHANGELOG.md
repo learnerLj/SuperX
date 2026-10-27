@@ -1,5 +1,11 @@
 # Changelog
 
+## Shared contract SSOT — 2026-10-28
+
+- Consolidate shared post, usage, generation metadata, failure, model, settings-input and authorization types in `src/shared/contracts.ts`. Provider, worker, history and reading UI derive their views from that owner; keep private wire frames and lifecycle/view state separate.
+- Preserve raw versus sanitized diagnostics and optional versus required credential recovery through derived types. Add compile-time checks for shared ownership and those boundaries. No runtime behavior, permissions, cache identities or connection changes.
+- Validation: strict types and 1,598 automated checks passed (3 platform-specific skips), including source-only reconstruction. All 27 generated runtime scripts and both vendor scripts are byte-identical to the baseline; the installation ZIP retains SHA-256 `d279b74bd4750386f8112afef27b3db28665b7c145e0c5ea3dbafa22f909d0ed`. No extension reload is needed for this type-only refactor.
+
 ## User-facing README — 2026-10-28
 
 - Simplify both language READMEs to features, installation, everyday use and upstream acknowledgements. Keep connection and developer details in their existing guides; remove obsolete release/store status and historical implementation details from the landing page.

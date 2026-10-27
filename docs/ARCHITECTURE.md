@@ -20,6 +20,12 @@ npm run package
 
 构建从安装目录递归枚举 JS，与 TS owner 双向核对；新增遗漏文件、缺 owner、生成物漂移均失败。`npm run format` / `npm run format:check` 使用锁定版本 Prettier 统一 TS 源码排版，全量检查包含格式验收。源码禁止显式 `any`、关闭类型检查的注释和 `as unknown as` 双重断言。动态 JSON、React fiber、浏览器 DOM 与协议帧使用有界契约；既有运行时校验保留。`@types/chrome` 锁定版本提供扩展 API 类型，`runtime-globals.d.ts` 描述各脚本实际暴露的全局对象，不引入运行时注册层。
 
+## 公共契约的唯一维护位置
+
+`src/shared/contracts.ts` 维护跨 worker、provider、历史和 UI 的 `Post`、来源、设置输入、Token 用量、生成元数据、失败详情、模型条目及授权契约。其他目录通过类型导入、重导出或 `Pick` / `Partial` 派生使用，不再各写一份字段。默认设置与模型档位的运行时唯一入口仍在 `src/shared/feed-core.ts`。
+
+`ProviderDiagnostics` 表示尚未归一化的 provider 观测，`RequestDiagnostics` 表示 core sanitizer 输出的有效诊断；原始值不能直接作为 UI 的已校验结果。`AnalysisResult` 的诊断类型参数体现此边界。执行上下文要求授权恢复回调，直接 provider 调用可省略；两者由同一授权契约派生。私有协议帧、worker 生命周期、历史精简记录和 DOM 状态保留各自职责，不强行合并。所有跨目录连接均为类型导入，不增加运行时脚本依赖。
+
 ## 真实调用链
 
 ```text

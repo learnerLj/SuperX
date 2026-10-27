@@ -4,7 +4,10 @@ import type {
   Settings,
   ReasoningEffort,
   ProviderId,
+  SettingsInput,
+  RequestDiagnostics,
 } from "./contracts";
+export type { RequestDiagnostics };
 export type API = ReturnType<typeof createCore>;
 type ModelProfile = {
   value: string;
@@ -12,7 +15,7 @@ type ModelProfile = {
   efforts: readonly string[];
   defaultEffort: ReasoningEffort;
 };
-type InputSettings = { [K in keyof Settings]?: unknown };
+type InputSettings = SettingsInput;
 type RetryInput = {
   provider?: unknown;
   code?: unknown;
@@ -30,19 +33,6 @@ type FailureInput = {
   httpStatus?: unknown;
   reason?: unknown;
 };
-export interface RequestDiagnostics {
-  failureOrigin: "http" | "stream" | "network";
-  transportStatus?: number;
-  requestId?: string;
-  responseId?: string;
-  providerMessage?: string;
-  startedAt?: number;
-  failedAt?: number;
-  elapsedMs?: number;
-  model?: string;
-  requestedModel?: string;
-  requestedEffort?: ReasoningEffort;
-}
 type DiagnosticInput = { [K in keyof RequestDiagnostics]?: unknown };
 type DisplayElement = Element & { innerText?: string; currentSrc?: string };
 type QuoteRoot = (

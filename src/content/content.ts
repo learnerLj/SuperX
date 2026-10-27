@@ -1,7 +1,15 @@
-import type { Post, Settings, Source, ProviderId } from "../shared/contracts";
+import type {
+  Post,
+  Settings,
+  Source,
+  ProviderId,
+  AnalysisResult,
+  Usage,
+  GenerationMetadata as Metadata,
+  FailureDetails,
+  RequestDiagnostics,
+} from "../shared/contracts";
 import type { ExtractedPost } from "../shared/feed-core";
-import type { Usage, Metadata, FailureDetails } from "../providers/types";
-import type { RequestDiagnostics } from "../shared/feed-core";
 import type {
   OAuthStatus,
   ErrorShape,
@@ -10,17 +18,7 @@ import type {
 } from "../ui/state-types";
 (function () {
   "use strict";
-  type Result = Metadata & {
-    text: string;
-    sources?: Source[];
-    verificationStatus?: string;
-    verificationStart?: number;
-    verificationFailure?: FailureDetails;
-    requestDiagnostics?: RequestDiagnostics;
-    apiVerification?: string;
-    warning?: string;
-    searched?: boolean;
-  };
+  type Result = AnalysisResult<RequestDiagnostics>;
   interface Retry {
     phase: string;
     max: number;

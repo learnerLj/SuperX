@@ -1,4 +1,4 @@
-import type { Usage } from "../providers/types";
+import type { Usage } from "../shared/contracts";
 import type { ControlMessage, Reply } from "./state-types";
 interface RawEntry {
   id?: unknown;

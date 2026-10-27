@@ -11,6 +11,7 @@ import type {
   SecurityMutation,
   BuildStatus,
   Result,
+  ProviderResult,
   SanitizedAnalysis,
   ErrorView,
   DiagnosticEntry,
@@ -1560,7 +1561,10 @@ function clearAPIDiagnostics() {
   return operation;
 }
 function verificationMetadata(
-  value: (Result | ErrorView) | null | undefined,
+  value:
+    | Pick<Result, "text" | "verificationStart" | "verificationFailure">
+    | null
+    | undefined,
   mode: string | undefined,
   text = String(value?.text || "").slice(0, 30000),
 ) {
@@ -1580,7 +1584,7 @@ function verificationMetadata(
   };
 }
 function withBillingMetadata(
-  value: Result,
+  value: ProviderResult,
   provider: ProviderId,
   verificationMode?: string,
 ) {
@@ -1596,12 +1600,14 @@ function withBillingMetadata(
     "requestDiagnostics",
   ] as const)
     delete result[field];
+  // Raw diagnostics were deleted above; requestMetadata adds only sanitizer output.
+  // TypeScript retains the pre-delete property type across the object spread.
   return {
     ...result,
     ...billingMetadata(value, provider),
     ...verificationMetadata(value, verificationMode),
     ...requestMetadata(value, provider),
-  };
+  } as Result;
 }
 function jobError(
   job: Job,

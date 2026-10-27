@@ -1,11 +1,5 @@
-import type {
-  Post,
-  Source,
-  Usage,
-  Metadata,
-  FailureDetails,
-  RequestDiagnostics,
-} from "./types";
+import type { AnalysisResult, UsageTotals } from "../shared/contracts";
+import type { Post, Usage, RequestDiagnostics } from "./types";
 export type Stage = "verify" | "comments";
 export type Content =
   | { type: "input_text"; text: string }
@@ -115,17 +109,8 @@ export interface Redaction {
   inputs?: (string | undefined)[];
   media?: boolean;
 }
-export interface Result extends Metadata {
-  [field: string]: unknown;
-  text: string;
-  sources?: Source[];
-  searched?: boolean;
-  verificationFailure?: FailureDetails;
-  requestDiagnostics?: RequestDiagnostics;
-  provider?: "api" | "oauth" | "build" | "x-native";
+export interface Result extends AnalysisResult<RequestDiagnostics> {
   task?: string;
-  verified?: boolean;
-  apiVerification?: string;
   verificationStatus?:
     | "pending"
     | "running"
@@ -133,17 +118,6 @@ export interface Result extends Metadata {
     | "unverified"
     | "incomplete"
     | "failed";
-  warning?: string;
-  completedAt?: number;
 }
-export type UsageKey =
-  | "input_tokens"
-  | "output_tokens"
-  | "total_tokens"
-  | "num_sources_used"
-  | "num_server_side_tools_used"
-  | "cost_in_usd_ticks";
-export type DetailKey =
-  | "input_tokens_details"
-  | "output_tokens_details"
-  | "server_side_tool_usage_details";
+export type UsageKey = keyof UsageTotals;
+export type DetailKey = Exclude<keyof Usage, keyof UsageTotals>;

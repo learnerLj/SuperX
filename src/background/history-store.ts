@@ -1,51 +1,15 @@
-import type { Source } from "../shared/contracts";
+import type { Source, Usage, GenerationMetadata } from "../shared/contracts";
+export type { Usage };
 export type API = ReturnType<typeof createHistoryStore>;
 export interface Limits {
   ttlMs: number;
   maxEntries: number;
   maxBytes: number;
 }
-export type Usage = Partial<
-  Record<
-    | "input_tokens"
-    | "output_tokens"
-    | "total_tokens"
-    | "num_sources_used"
-    | "num_server_side_tools_used"
-    | "cost_in_usd_ticks",
-    number
-  >
-> & {
-  input_tokens_details?: Partial<
-    Record<
-      "cached_tokens" | "text_tokens" | "image_tokens" | "audio_tokens",
-      number
-    >
-  >;
-  output_tokens_details?: Partial<
-    Record<"reasoning_tokens" | "audio_tokens", number>
-  >;
-  server_side_tool_usage_details?: Partial<
-    Record<
-      | "web_search_calls"
-      | "x_search_calls"
-      | "x_posts_fetched"
-      | "x_users_fetched"
-      | "code_interpreter_calls"
-      | "file_search_calls"
-      | "mcp_calls"
-      | "document_search_calls"
-      | "image_generation_calls",
-      number
-    >
-  >;
-};
-export interface Metadata {
-  usage?: Usage;
-  usageComplete?: boolean;
-  model?: string;
-  usageByStage?: { [stage: string]: Usage };
-  modelByStage?: { [stage: string]: string };
+/** Persisted stage maps contain only normalized, defined entries. */
+export interface Metadata extends GenerationMetadata {
+  usageByStage?: Required<NonNullable<GenerationMetadata["usageByStage"]>>;
+  modelByStage?: Required<NonNullable<GenerationMetadata["modelByStage"]>>;
 }
 export interface HistoryAnalysis extends Metadata {
   text: string;

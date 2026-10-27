@@ -1,9 +1,5 @@
-import type { Settings } from "../shared/contracts";
-export interface ModelEntry {
-  id: string;
-  available?: boolean;
-  efforts?: string[];
-}
+import type { Settings, ModelEntry } from "../shared/contracts";
+export type { ModelEntry } from "../shared/contracts";
 export interface BuildStatus {
   ready?: boolean;
   authenticated?: boolean;
