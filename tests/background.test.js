@@ -4361,3 +4361,173 @@ test('passive persistent-cache failure reports a miss without authorizing a prov
   assert.equal(bg.nativeCalls.length,1);assert.equal(bg.apiCalls.length,0);assert.equal((await bg.message({type:'GET_CONFIG'})).answerCacheReady,false);
   assert.equal(port.messages.some(m=>m.requestId==='passive-storage-failed'&&['START','QUEUED'].includes(m.type)),false);
 });
+
+for(const crossTab of [false,true])test('single-flight reserves before cache read and shares START, progress, force and final across '+(crossTab?'tabs':'request ids'),async()=>{
+ const read=deferred(),work=deferred();let entered=0;
+ const bg=createBackground({answerGet:async()=>{entered++;await read.promise;},apiRun:()=>work.promise});await bg.ready();
+ const owner=bg.connect(),peer=crossTab?bg.connect({sender:{id:bg.chrome.runtime.id,frameId:0,url:'https://x.com/home',tab:{id:8}}}):owner;
+ owner.send({type:'ANALYZE',requestId:'sf-owner',post:post(6100)});await until(()=>entered===1);
+ peer.send({type:'ANALYZE',requestId:'sf-peer',post:post(6100)});read.resolve();await until(()=>bg.apiCalls.length>=1);await tick();await tick();
+ assert.equal(bg.apiCalls.length,1);
+ peer.send({type:'ANALYZE',requestId:'sf-force',post:post(6100),force:true});await tick();await tick();assert.equal(bg.apiCalls.length,1);
+ bg.apiCalls[0].onUpdate({text:'Shared partial'});await until(()=>peer.messages.some(m=>m.requestId==='sf-force'&&m.type==='UPDATE'));
+ work.resolve({text:'Shared final',provider:'api'});await until(()=>peer.messages.some(m=>m.requestId==='sf-peer'&&m.type==='RESULT'));
+ for(const id of ['sf-owner','sf-peer','sf-force']){const messages=(id==='sf-owner'?owner:peer).messages.filter(m=>m.requestId===id);assert.ok(messages.some(m=>m.type==='START'));assert.equal(messages.filter(m=>m.type==='RESULT').length,1);}
+ peer.send({type:'ANALYZE',requestId:'sf-reopen',post:post(6100)});await until(()=>peer.messages.some(m=>m.requestId==='sf-reopen'&&m.type==='RESULT'));assert.equal(bg.apiCalls.length,1);assert.equal(peer.messages.find(m=>m.requestId==='sf-reopen'&&m.type==='RESULT').cached,true);
+});
+
+const sfPeer=bg=>bg.connect({sender:{id:bg.chrome.runtime.id,frameId:0,url:'https://x.com/home',tab:{id:8}}});
+const sfSend=(port,id,extra={})=>port.send({type:'ANALYZE',requestId:id,post:post(6200),...extra});
+const sfResult=(port,id)=>port.messages.find(m=>m.requestId===id&&m.type==='RESULT');
+for(const cancel of ['follower','owner','owner-all','owner-disconnect'])test('single-flight API retains other subscribers after '+cancel,async()=>{
+ const gate=deferred();const bg=createBackground({apiRun:()=>gate.promise});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);
+ sfSend(owner,'sf-o');await until(()=>bg.apiCalls.length===1);sfSend(peer,'sf-p');await until(()=>peer.messages.some(m=>m.type==='START'));
+ if(cancel==='owner-disconnect')owner.disconnect();else (cancel==='follower'?peer:owner).send({type:cancel==='owner-all'?'CANCEL_ALL':'CANCEL',requestId:cancel==='follower'?'sf-p':'sf-o'});
+ await tick();assert.equal(bg.apiCalls[0].signal.aborted,false);gate.resolve({text:'Surviving subscriber',provider:'api'});
+ const survivor=cancel==='follower'?owner:peer,id=cancel==='follower'?'sf-o':'sf-p';await until(()=>sfResult(survivor,id));assert.equal(bg.apiCalls.length,1);
+ sfSend(survivor,'sf-cached');await until(()=>sfResult(survivor,'sf-cached'));assert.equal(sfResult(survivor,'sf-cached').cached,true);assert.equal(bg.apiCalls.length,1);
+});
+
+test('single-flight joins queued work and retry wait, replays status and settles every subscriber',async()=>{
+ const hold=deferred(),retry=deferred();const bg=createBackground({settings:{apiConcurrency:1},manualRetryTimers:true,apiRun:call=>call.post.id==='6201'?hold.promise:retry.promise});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);
+ sfSend(owner,'sf-block',{post:post(6201)});await until(()=>bg.apiCalls.length===1);sfSend(owner,'sf-q');await until(()=>owner.messages.some(m=>m.requestId==='sf-q'&&m.type==='QUEUED'));
+ sfSend(peer,'sf-q-peer');await until(()=>peer.messages.some(m=>m.requestId==='sf-q-peer'&&m.type==='QUEUED'));assert.equal(bg.runtimeCounts().queued,1);
+ hold.resolve({text:'Block finished',provider:'api'});await until(()=>bg.apiCalls.length===2);retry.reject(Object.assign(new Error('retry'),{code:'RATE_LIMIT'}));await until(()=>peer.messages.some(m=>m.type==='RETRY_WAIT'));
+ sfSend(peer,'sf-retry-force',{force:true});await until(()=>peer.messages.some(m=>m.requestId==='sf-retry-force'&&m.type==='RETRY_WAIT'));assert.equal(bg.apiCalls.length,2);
+ bg.advanceRetryTimers(3000);await until(()=>bg.apiCalls.length===3);await until(()=>peer.messages.some(m=>m.requestId==='sf-retry-force'&&m.type==='RETRY_WAIT'&&m.retryAttempt===2));
+ // Exhaust retries using the same rejected provider promise; everyone ends in ERROR.
+ for(let i=0;i<core.AUTO_RETRY_LIMIT;i++){bg.advanceRetryTimers(3000);await tick();await tick();}
+ await until(()=>peer.messages.some(m=>m.requestId==='sf-retry-force'&&m.type==='ERROR'));
+ for(const [port,id]of [[owner,'sf-q'],[peer,'sf-q-peer'],[peer,'sf-retry-force']])assert.equal(port.messages.filter(m=>m.requestId===id&&m.type==='ERROR').length,1);
+ assert.deepEqual(bg.runtimeCounts(),{jobs:0,queued:0,running:0});
+});
+
+for(const native of [false,true])test('single-flight all cancelled cannot reopen before '+(native?'native':'API')+' transport settles',async()=>{
+ const gate=deferred();const bg=createBackground({settings:{provider:native?'x-native':'api'},apiRun:(_,h)=>h.apiCalls.length===1?gate.promise:{text:'New after cleanup',provider:'api'},nativeRun:(_,h)=>h.nativeCalls.length===1?gate.promise:{text:'New after cleanup',provider:'x-native',verificationStatus:'completed'}});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg),extra=native?{nativeAccount:NATIVE_ALICE}:{};
+ sfSend(owner,'sf-cancel-o',extra);const calls=native?bg.nativeCalls:bg.apiCalls;await until(()=>calls.length===1);owner.send({type:'CANCEL',requestId:'sf-cancel-o'});await until(()=>calls[0].signal.aborted);
+ sfSend(peer,'sf-restart',extra);await until(()=>peer.messages.some(m=>m.requestId==='sf-restart'&&m.type==='QUEUED'));await tick();assert.equal(calls.length,1);
+ gate.reject(Object.assign(new Error('cleanup complete'),{code:'CANCELLED'}));await until(()=>sfResult(peer,'sf-restart'));assert.equal(calls.length,2);assert.equal(peer.messages.some(m=>m.requestId==='sf-restart'&&m.type==='ERROR'),false);
+});
+
+for(const action of ['cancel','disconnect','account-change'])test('single-flight native source '+action+' preserves followers with explicit restart only after source loss',async()=>{
+ const gate=deferred();const bg=createBackground({settings:{provider:'x-native'},nativeRun:(_,h)=>h.nativeCalls.length===1?gate.promise:{text:'Restarted on follower',provider:'x-native',verificationStatus:'completed'}});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);
+ sfSend(owner,'sf-native-o',{nativeAccount:NATIVE_ALICE});await until(()=>bg.nativeCalls.length===1);sfSend(peer,'sf-native-p',{nativeAccount:NATIVE_ALICE});await until(()=>peer.messages.some(m=>m.type==='START'));
+ if(action==='cancel')owner.send({type:'CANCEL',requestId:'sf-native-o'});else if(action==='disconnect')owner.disconnect();else owner.send({type:'NATIVE_ACCOUNT_CHANGED',nativeAccount:NATIVE_BOB});await tick();
+ assert.equal(bg.nativeCalls[0].signal.aborted,action!=='cancel');assert.equal(bg.nativeCalls.length,1);
+ if(action==='cancel')gate.resolve({text:'Same original transport',provider:'x-native',verificationStatus:'completed'});else gate.reject(Object.assign(new Error('Source lost'),{code:'CANCELLED'}));
+ await until(()=>sfResult(peer,'sf-native-p'));assert.equal(bg.nativeCalls.length,action==='cancel'?1:2);
+ if(action!=='cancel'){assert.equal(bg.nativeCalls[1].client.port,peer);assert.ok(peer.messages.some(m=>m.requestId==='sf-native-p'&&m.type==='QUEUED'));}
+ assert.equal(peer.messages.some(m=>m.requestId==='sf-native-p'&&m.type==='ERROR'),false);
+});
+
+test('single-flight forced refresh joins, replaces old cache and is reused after completion',async()=>{
+ const gate=deferred();const bg=createBackground({apiRun:(_,h)=>h.apiCalls.length===1?{text:'Old cached answer',provider:'api'}:gate.promise});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);sfSend(owner,'sf-seed');await until(()=>sfResult(owner,'sf-seed'));await bg.cacheSnapshot();
+ sfSend(owner,'sf-refresh',{force:true});await until(()=>bg.apiCalls.length===2);sfSend(peer,'sf-refresh-peer');await until(()=>peer.messages.some(m=>m.type==='START'));assert.equal(sfResult(peer,'sf-refresh-peer'),undefined);
+ gate.resolve({text:'Refreshed answer',provider:'api'});await until(()=>sfResult(peer,'sf-refresh-peer'));sfSend(peer,'sf-refresh-cache');await until(()=>sfResult(peer,'sf-refresh-cache'));assert.equal(sfResult(peer,'sf-refresh-cache').cached,true);assert.equal(sfResult(peer,'sf-refresh-cache').result.text,'Refreshed answer');assert.equal(bg.apiCalls.length,2);
+});
+
+for(const isolation of ['account','settings','clear','credential','oauth','build'])test('single-flight isolates '+isolation,async()=>{
+ const gates=[];const run=()=>{const gate=deferred();gates.push(gate);return gate.promise;};const bg=createBackground({settings:{provider:isolation==='account'?'x-native':isolation==='oauth'?'oauth':isolation==='build'?'build':'api'},oauthState:oauthConnected(OAUTH_ACCOUNT_A),apiRun:run,nativeRun:run,buildRun:run});await bg.ready();if(isolation==='build')await bg.configureBuild();const owner=bg.connect(),peer=sfPeer(bg);
+ sfSend(owner,'sf-isolate-old',isolation==='account'?{nativeAccount:NATIVE_ALICE}:{});await until(()=>gates.length===1);
+ if(isolation==='settings')await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,language:'ja'}});
+ if(isolation==='clear')await bg.message({type:'CLEAR_CACHE'});
+ if(isolation==='credential')await bg.message({type:'SAVE_KEY',apiKey:'different-secret'});
+ if(isolation==='oauth')bg.oauthManager.change(oauthConnected(OAUTH_ACCOUNT_B));
+ if(isolation==='build'){await bg.message({type:'SAVE_BUILD_CONNECTION',secret:'superx_'+'f'.repeat(64),port:2419});gates[0].resolve({text:'Old identity',provider:'build'});await until(()=>bg.runtimeCounts().running===0);}
+ sfSend(peer,'sf-isolate-new',isolation==='account'?{nativeAccount:NATIVE_BOB}:{});await until(()=>gates.length===2);
+ gates[0].resolve({text:'Old identity',provider:isolation==='account'?'x-native':'api',verificationStatus:'completed'});gates[1].resolve({text:'New identity',provider:isolation==='account'?'x-native':'api',verificationStatus:'completed'});await until(()=>sfResult(peer,'sf-isolate-new'));assert.equal(sfResult(peer,'sf-isolate-new').result.text,'New identity');
+});
+
+test('single-flight queued cancellation and rail collapse detach only that subscription with one terminal',async()=>{
+ const hold=deferred(),work=deferred();const bg=createBackground({settings:{apiConcurrency:1},apiRun:call=>call.post.id==='6201'?hold.promise:work.promise});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);
+ sfSend(owner,'sf-rail-block',{post:post(6201)});await until(()=>bg.apiCalls.length===1);sfSend(owner,'sf-rail-o');await until(()=>owner.messages.some(m=>m.requestId==='sf-rail-o'&&m.type==='QUEUED'));
+ sfSend(peer,'sf-rail-p');sfSend(peer,'sf-queued-cancel');await until(()=>peer.messages.some(m=>m.requestId==='sf-queued-cancel'&&m.type==='QUEUED'));
+ peer.send({type:'CANCEL_IF_QUEUED',requestId:'sf-queued-cancel'});await until(()=>peer.messages.some(m=>m.requestId==='sf-queued-cancel'&&m.type==='ERROR'));
+ assert.equal(peer.messages.filter(m=>m.requestId==='sf-queued-cancel'&&m.type==='ERROR').length,1);
+ owner.send({type:'SET_RAIL_COLLAPSED',collapsed:true});await until(()=>owner.messages.some(m=>m.requestId==='sf-rail-o'&&m.code==='RAIL_COLLAPSED'));
+ assert.equal(peer.messages.some(m=>m.requestId==='sf-rail-p'&&m.type==='ERROR'),false);hold.resolve({text:'Done',provider:'api'});await until(()=>bg.apiCalls.length===2);work.resolve({text:'Follower survived rail collapse',provider:'api'});await until(()=>sfResult(peer,'sf-rail-p'));
+});
+
+test('single-flight disconnected API owner timeout retries on the live audience without dropping its terminal',async()=>{
+ const gate=deferred();const bg=createBackground({manualRetryTimers:true,apiRun:(_,h)=>h.apiCalls.length===1?gate.promise:{text:'Recovered after owner loss',provider:'api'}});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);
+ sfSend(owner,'sf-timeout-o');await until(()=>bg.apiCalls.length===1);sfSend(peer,'sf-timeout-p');await until(()=>peer.messages.some(m=>m.type==='START'));owner.disconnect();bg.expireDeadline(150000);
+ await tick();assert.equal(bg.apiCalls.length,1);assert.equal(bg.runtimeCounts().running,1);gate.reject(Object.assign(new Error('Timeout cleanup settled'),{code:'TIMEOUT'}));await until(()=>peer.messages.some(m=>m.type==='RETRY_WAIT'));
+ bg.advanceRetryTimers(3000);await until(()=>sfResult(peer,'sf-timeout-p'));assert.equal(bg.apiCalls.length,2);assert.equal(peer.messages.some(m=>m.type==='ERROR'),false);
+});
+
+test('single-flight progress replay retains reader text after metadata-only updates',async()=>{
+ const gate=deferred();const bg=createBackground({apiRun:()=>gate.promise});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);sfSend(owner,'sf-replay-o');await until(()=>bg.apiCalls.length===1);
+ bg.apiCalls[0].onUpdate({text:'Visible snapshot',sources:[{url:'https://example.com',title:'Source'}]});bg.apiCalls[0].onUpdate({phase:'verify',usage:{total_tokens:12}});
+ sfSend(peer,'sf-replay-p');await until(()=>peer.messages.some(m=>m.type==='UPDATE'));assert.equal(peer.messages.findLast(m=>m.type==='UPDATE').text,'Visible snapshot');assert.equal(peer.messages.findLast(m=>m.type==='UPDATE').sources.length,1);
+ gate.resolve({text:'Complete',provider:'api'});await until(()=>sfResult(peer,'sf-replay-p'));
+});
+
+test('single-flight admission failure settles every subscriber and releases the semantic reservation',async()=>{
+ let fail=false,entered=false;const gate=deferred();const bg=createBackground({sessionGet:async keys=>{if(fail&&keys==='apiKey'){entered=true;await gate.promise;throw new Error('Storage unavailable');}}});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);await until(()=>owner.messages.some(m=>m.type==='CONFIG')&&peer.messages.some(m=>m.type==='CONFIG'));
+ fail=true;sfSend(owner,'sf-storage-o');await until(()=>entered);sfSend(peer,'sf-storage-p');await tick();gate.resolve();await until(()=>peer.messages.some(m=>m.requestId==='sf-storage-p'&&m.type==='ERROR'));assert.equal(owner.messages.filter(m=>m.requestId==='sf-storage-o'&&m.type==='ERROR').length,1);assert.deepEqual(bg.runtimeCounts(),{jobs:0,queued:0,running:0});
+ fail=false;sfSend(peer,'sf-storage-reopen');await until(()=>sfResult(peer,'sf-storage-reopen'));assert.equal(bg.apiCalls.length,1);
+});
+
+test('single-flight unresolved native account shares only its source and cancels on identity change',async()=>{
+ const gates=[];const bg=createBackground({settings:{provider:'x-native'},nativeRun:()=>{const gate=deferred();gates.push(gate);return gate.promise;}});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);
+ sfSend(owner,'sf-unknown-o');await until(()=>gates.length===1);sfSend(owner,'sf-unknown-same');await until(()=>owner.messages.some(m=>m.requestId==='sf-unknown-same'&&m.type==='START'));assert.equal(gates.length,1);
+ sfSend(peer,'sf-unknown-other');await until(()=>gates.length===2);owner.send({type:'NATIVE_ACCOUNT_CHANGED',nativeAccount:NATIVE_ALICE});await until(()=>bg.nativeCalls[0].signal.aborted);assert.equal(bg.nativeCalls[1].signal.aborted,false);
+ gates[0].reject(Object.assign(new Error('Cancelled'),{code:'CANCELLED'}));gates[1].resolve({text:'Separate unresolved source',provider:'x-native',verificationStatus:'completed'});await until(()=>sfResult(peer,'sf-unknown-other'));
+ for(const id of ['sf-unknown-o','sf-unknown-same'])assert.equal(owner.messages.filter(m=>m.requestId===id&&m.type==='ERROR').length,1);
+});
+
+test('single-flight native reused request ID cannot receive the old cancellation terminal',async()=>{
+ const gate=deferred();const bg=createBackground({settings:{provider:'x-native'},nativeRun:(_,h)=>h.nativeCalls.length===1?gate.promise:{text:'New same ID result',provider:'x-native',verificationStatus:'completed'}});await bg.ready();const owner=bg.connect();sfSend(owner,'sf-reused',{nativeAccount:NATIVE_ALICE});await until(()=>bg.nativeCalls.length===1);
+ const queuedBefore=owner.messages.filter(m=>m.requestId==='sf-reused'&&m.type==='QUEUED').length;owner.send({type:'CANCEL',requestId:'sf-reused'});await until(()=>bg.nativeCalls[0].signal.aborted);sfSend(owner,'sf-reused',{nativeAccount:NATIVE_ALICE});await until(()=>owner.messages.filter(m=>m.requestId==='sf-reused'&&m.type==='QUEUED').length>queuedBefore);assert.equal(bg.nativeCalls.length,1);
+ gate.reject(Object.assign(new Error('Closed'),{code:'CANCELLED'}));await until(()=>sfResult(owner,'sf-reused'));assert.equal(bg.nativeCalls.length,2);assert.equal(owner.messages.some(m=>m.type==='ERROR'&&m.requestId==='sf-reused'),false);
+});
+
+for(const native of [false,true])test('single-flight followers receive '+(native?'native':'Build')+' unconfirmed cleanup instead of an automatic restart',async()=>{
+ const gate=deferred(),bg=createBackground({settings:{provider:native?'x-native':'build'},nativeRun:()=>gate.promise,buildRun:()=>gate.promise});await bg.ready();if(!native)await bg.configureBuild();const owner=bg.connect(),peer=sfPeer(bg),extra=native?{nativeAccount:NATIVE_ALICE}:{};
+ sfSend(owner,'sf-unconfirmed-o',extra);const calls=native?bg.nativeCalls:bg.buildCalls;await until(()=>calls.length===1);sfSend(peer,'sf-unconfirmed-p',extra);await until(()=>peer.messages.some(m=>m.type==='START'));owner.disconnect();
+ gate.reject(Object.assign(new Error('Cleanup unconfirmed'),{code:native?'X_NATIVE_CANCEL_UNCONFIRMED':'BUILD_CANCEL_UNCONFIRMED'}));await until(()=>peer.messages.some(m=>m.requestId==='sf-unconfirmed-p'&&m.type==='ERROR'));
+ assert.equal(peer.messages.find(m=>m.type==='ERROR').code,native?'X_NATIVE_CANCEL_UNCONFIRMED':'BUILD_CANCEL_UNCONFIRMED');assert.equal(calls.length,1);assert.equal(peer.messages.filter(m=>m.type==='START').length,1);
+});
+
+test('single-flight successive last native subscribers each settle after the same pending cleanup',async()=>{
+ const gate=deferred();const bg=createBackground({settings:{provider:'x-native'},nativeRun:()=>gate.promise});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);
+ sfSend(owner,'sf-last-a',{nativeAccount:NATIVE_ALICE});await until(()=>bg.nativeCalls.length===1);owner.send({type:'CANCEL',requestId:'sf-last-a'});await until(()=>bg.nativeCalls[0].signal.aborted);
+ sfSend(peer,'sf-last-b',{nativeAccount:NATIVE_ALICE});await until(()=>peer.messages.some(m=>m.requestId==='sf-last-b'&&m.type==='QUEUED'));peer.send({type:'CANCEL',requestId:'sf-last-b'});await tick();assert.equal(bg.nativeCalls.length,1);
+ gate.reject(Object.assign(new Error('Closed'),{code:'CANCELLED'}));await until(()=>owner.messages.some(m=>m.requestId==='sf-last-a'&&m.type==='ERROR')&&peer.messages.some(m=>m.requestId==='sf-last-b'&&m.type==='ERROR'));
+ for(const [port,id]of [[owner,'sf-last-a'],[peer,'sf-last-b']])assert.equal(port.messages.filter(m=>m.requestId===id&&m.type==='ERROR').length,1);
+ assert.deepEqual(bg.runtimeCounts(),{jobs:0,queued:0,running:0});
+});
+
+for(const leave of ['disconnect','cancel-all'])test('completed native answer persists across '+leave+' while another cache write is blocked',async()=>{
+ const gate=deferred();let puts=0,entered=false;
+ const bg=createBackground({settings:{provider:'x-native'},answerPut:async()=>{if(++puts===1){entered=true;await gate.promise;}}});await bg.ready();
+ const owner=bg.connect();await nativeAnalyze(bg,owner,'write-blocker',7000);await until(()=>entered);
+ const completed=await nativeAnalyze(bg,owner,'completed-before-leave',7001);assert.equal(completed.type,'RESULT');
+ if(leave==='disconnect')owner.disconnect();else owner.send({type:'CANCEL_ALL'});
+ await tick();gate.resolve();await bg.cacheSnapshot();
+ const peer=bg.connect({sender:{id:bg.chrome.runtime.id,frameId:0,url:'https://x.com/home',tab:{id:8}}});
+ const reopened=await nativeAnalyze(bg,peer,'reopen-after-write',7001);
+ assert.equal(reopened.cached,true);assert.equal(bg.nativeCalls.length,2);
+});
+test('reopening a completed analysis waits for its pending cache write without another provider call',async()=>{
+ const gate=deferred();let entered=false;
+ const bg=createBackground({settings:{provider:'x-native'},answerPut:async()=>{entered=true;await gate.promise;}});await bg.ready();
+ const owner=bg.connect();await nativeAnalyze(bg,owner,'completed-pending-write',7100);await until(()=>entered);
+ const peer=bg.connect({sender:{id:bg.chrome.runtime.id,frameId:0,url:'https://x.com/home',tab:{id:8}}});
+ const reopened=nativeAnalyze(bg,peer,'reopen-pending-write',7100);await tick();await tick();assert.equal(bg.nativeCalls.length,1);
+ gate.resolve();assert.equal((await reopened).cached,true);assert.equal(bg.nativeCalls.length,1);
+});
+
+test('rail width persists and broadcasts independently of analysis settings revision and running jobs',async()=>{
+ const gate=deferred(),bg=createBackground({apiRun:()=>gate.promise});await bg.ready();const owner=bg.connect(),peer=sfPeer(bg);const before=await bg.message({type:'GET_CONFIG'});
+ sfSend(owner,'resize-active');await until(()=>bg.apiCalls.length===1);owner.send({type:'SET_RAIL_WIDTH',width:600});await until(()=>bg.local.data.railWidth===600);
+ const after=await bg.message({type:'GET_CONFIG'});assert.equal(after.railWidth,600);assert.equal(after.taskRevision,before.taskRevision);assert.deepEqual(after.settings,before.settings);assert.equal(bg.apiCalls[0].signal.aborted,false);assert.ok(peer.messages.some(m=>m.type==='RAIL_WIDTH'&&m.width===600));
+ gate.resolve({text:'Answer remains live',provider:'api'});await until(()=>sfResult(owner,'resize-active'));
+ const restarted=createBackground({local:bg.local.data});await restarted.ready();assert.equal((await restarted.message({type:'GET_CONFIG'})).railWidth,600);
+ const port=restarted.connect();port.send({type:'SET_RAIL_WIDTH',width:0});await until(()=>restarted.local.data.railWidth===0);assert.equal((await restarted.message({type:'GET_CONFIG'})).railWidth,0);
+});
+test('rail width rejects malformed values and serializes user resize preferences in order',async()=>{
+ const gate=deferred();let entered=false;const bg=createBackground({localSet:async values=>{if(values.railWidth===500){entered=true;await gate.promise;}}});await bg.ready();const port=bg.connect();
+ for(const width of [-1,219,220.5,'500',null,NaN,Infinity])port.send({type:'SET_RAIL_WIDTH',width});await tick();assert.equal((await bg.message({type:'GET_CONFIG'})).railWidth,0);
+ port.send({type:'SET_RAIL_WIDTH',width:500});await until(()=>entered);port.send({type:'SET_RAIL_WIDTH',width:700});await until(()=>port.messages.some(m=>m.type==='RAIL_WIDTH'&&m.width===700));gate.resolve();await until(()=>bg.local.data.railWidth===700);assert.equal((await bg.message({type:'GET_CONFIG'})).railWidth,700);
+});

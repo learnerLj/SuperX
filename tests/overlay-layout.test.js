@@ -169,13 +169,13 @@ test('explicit viewport offsets and fractional CSS coordinates retain the bounda
   assert.ok(card.top + card.height <= 692);
 });
 
-test('native rail covers the complete right column with no gap or inset', () => {
+test('native rail aligns with sidebar and preserves its gap from the post', () => {
   const primary = Object.freeze({ left: 300, right: 900, top: 0, bottom: 900 });
   const sidebar = Object.freeze({ left: 930, right: 1300, top: 0, bottom: 900 });
   assert.deepEqual(railBounds(primary, sidebar, viewport), {
-    hidden: false, reason: null, left: 900, top: 0, width: 400, height: 900
+    hidden: false, reason: null, left: 930, top: 0, width: 370, height: 900
   });
-  // The rail includes the native 30px gutter as well as the widgets' column.
+  // The native 30px gutter stays clear, without moving either column.
   assert.equal(primary.right, 900);
   assert.equal(sidebar.left, 930);
 });
@@ -184,13 +184,13 @@ test('rail width uses the native sidebar edge and clips to the viewport on resiz
   const primary = { left: 300, right: 900 };
   const sidebar = { left: 930, right: 1350 };
   const clipped = railBounds(primary, sidebar, { width: 1200, height: 700 });
-  assert.equal(clipped.left, 900);
-  assert.equal(clipped.width, 300);
+  assert.equal(clipped.left, 930);
+  assert.equal(clipped.width, 270);
   assert.equal(clipped.height, 700);
-  const narrow = railBounds(primary, sidebar, { width: 1119, height: 700 });
+  const narrow = railBounds(primary, sidebar, { width: 1149, height: 700 });
   assert.equal(narrow.hidden, true);
   assert.equal(narrow.reason, 'no-right-room');
-  const exact = railBounds(primary, sidebar, { width: 1120, height: 700 });
+  const exact = railBounds(primary, sidebar, { width: 1150, height: 700 });
   assert.equal(exact.width, 220);
   assert.equal(exact.hidden, false);
 });
@@ -369,4 +369,14 @@ test('invalid separators are omitted while a partially visible zero or negative 
     [{ top: 0, width: 0.8, color: undefined }]);
   assert.deepEqual(placeRailSeparators(lines, { width: 0, height: 900 }), []);
   assert.deepEqual(placeRailSeparators(null, viewport), []);
+});
+
+test('custom rail width uses right-side space, clips on small screens and keeps the preferred width',()=>{
+ const primary={left:300,right:900},sidebar={left:930,right:1280};
+ assert.equal(railBounds(primary,sidebar,{width:1800,height:900}).width,350);
+ assert.equal(railBounds(primary,sidebar,{width:1800,height:900},{preferredWidth:700}).width,700);
+ assert.equal(railBounds(primary,sidebar,{width:1200,height:900},{preferredWidth:700}).width,270);
+ assert.equal(railBounds(primary,sidebar,{width:1800,height:900},{preferredWidth:700}).width,700);
+ assert.equal(railBounds(primary,sidebar,{width:1800,height:900},{preferredWidth:0}).width,350);
+ assert.equal(primary.right,900);assert.equal(sidebar.left,930);
 });

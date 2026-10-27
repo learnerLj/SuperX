@@ -43,6 +43,14 @@ background.js 保存完整成功答案
 | `extension/*-provider.js` | 已有服务的认证或传输协议；registry 不复制它们的连接生命周期 |
 | `tests/` | 合成 provider/browser/storage fixtures，不调用真实付费服务 |
 
+同一分析在后台先按缓存语义、账号、凭据代、设置版本和缓存清空代合并，再异步读缓存。不同标签页共享排队、生成、重试与最终结果；取消一个订阅不取消其他订阅。已完成答案的后续读取等待同键缓存写入，避免落库前重复调用。只有尚未开始且离开可见／预加载窗口的自动任务会因滚动撤回；已开始分析的重试继续保留。X native 的来源文档失效时，必须等待旧连接真正结束，才能由存活订阅的页面续开。
+
+帖子详情页只自动核查URL选中的主帖，其他回复／上下文仅恢复已有缓存，主动点「分析此回复」才提交缓存优先的显式任务；首页预加载保持原规则。最后一个订阅页面关闭时取消未完成任务，不保留无人需要的后台暂停队列；完整成功答案保留缓存。
+
+分析右栏沿用原生sidebar宽度，保留搜索框位置，工具栏在搜索框下方。输出语言由设置页管理；原生搜索获得焦点时暂时隐藏overlay供建议列表交互，失焦恢复，不取消已开始分析。
+
+右栏宽度由右边缘separator调整，默认跟随native sidebar；独立local偏好`railWidth`为0时自动，用户值至少220 CSS px，显示宽度按视口裁剪但保留偏好。松手后串行存储并广播，取消未完成拖动回滚；该偏好不进入分析settings、revision或缓存键。双击／Home恢复自动，方向键调整。
+
 ## Provider 接口
 
 `ProviderAdapter` 是实际被后台消费的接口，不是单独的说明类型。每个适配器提供 `id`、`capabilities`、`model(settings)`、`concurrency(settings)`、`publicError(error)` 和 `run(request, context)`。请求区分 `analysis`、`comments`、`draft`，结果区分答案与评论。API/OAuth/Build 支持三类任务；X native 只支持已发布帖子核查。

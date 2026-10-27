@@ -13,11 +13,12 @@
   let uiLanguage = UI.resolveLanguage('auto',xUILanguage);
   const t = (key, vars) => UI.t(key, uiLanguage, vars);
   let settings = Core.DEFAULT_SETTINGS, providerReady = false, answerCacheReady = false, connected = false, port, used = 0, collapsed = false;
+  let customRailWidth=0,resizeDrag=null;
   let lastPath = location.pathname, scanTimer, reconnectTimer, handshakeTimer, dwellTimer, dwellDeadline=0, needsPageRefresh = false;
   let hasConfig=false,workerSleeping=false,awaitingConfig=false,reconnectFailures=0,xModalBlocked=false,pageSuspended=false;
   let oauthState={},credentialIdentity='',taskRevision;
   let draftComposer;
-  const explicitRequest=request=>request?.task==='analysis'&&request.force===true;
+  const explicitRequest=request=>request?.task==='analysis'&&(request.force===true||request.manual===true);
   const wakeActions=new Map(),wakeControls=new Map();
   const entries = new Map(), detachedEntries = new Set(), requests = new Map(), visible = new Set();
   // Reading a saved answer is independent of permission to start paid work.
@@ -45,11 +46,12 @@
        create a stacking context, so the line remains continuous at the corner. */
     .rail::after{content:'';position:absolute;top:0;bottom:0;right:0;width:0;border-right:1px solid var(--gf-border,#2f3336);z-index:3;pointer-events:none;}
     .rail-head{position:absolute;z-index:2;display:flex;align-items:center;gap:6px;min-width:0;box-sizing:border-box;padding:0 12px;overflow:hidden;background:var(--gf-bg,#000);color:var(--gf-fg,#e7e9ea);border-bottom:1px solid var(--gf-border,#2f3336);font:700 17px/20px var(--gf-font,system-ui);pointer-events:auto;}
-    .rail-head strong{display:flex;align-items:center;gap:7px;flex:1;min-width:0;overflow:hidden;white-space:nowrap;}.rail-brand-name{min-width:0;overflow:hidden;text-overflow:ellipsis;}.brand-symbol{display:block;flex:none;width:20px;height:20px;background-color:currentColor;-webkit-mask:url(${JSON.stringify(symbolURL)}) center/contain no-repeat;mask:url(${JSON.stringify(symbolURL)}) center/contain no-repeat;mask-mode:alpha;}.rail-head button,.rail-expand{display:flex;align-items:center;justify-content:center;box-sizing:border-box;height:32px;font:400 13px/20px var(--gf-font,system-ui);padding:0 8px;border:0;background:transparent;color:var(--gf-accent,#1d9bf0);cursor:pointer;flex-shrink:0;}.rail-head button:hover,.rail-language:hover,.rail-expand:hover{background:rgba(127,127,127,.12);}.rail-head button:focus-visible,.rail-language:focus-visible,.rail-expand:focus-visible{outline:2px solid var(--gf-accent,#1d9bf0);outline-offset:-2px;}
-    .rail-language-control{position:relative;width:104px;max-width:35%;min-width:0;flex-shrink:1;height:32px;}.rail-language{appearance:none;box-sizing:border-box;width:100%;height:32px;font:400 13px/20px var(--gf-font,system-ui);color:var(--gf-fg,#e7e9ea);color-scheme:var(--gf-scheme,dark);background:transparent;border:0;min-width:0;padding:0 26px 0 8px;text-align:right;text-align-last:right;cursor:pointer;}.rail-language option{text-align:start;text-align-last:auto;background:var(--gf-bg,#000);color:var(--gf-fg,#e7e9ea);}.language-chevron{position:absolute;top:50%;right:8px;transform:translateY(-50%);width:12px;height:12px;color:var(--gf-muted,#71767b);pointer-events:none;}.rail-head[data-compact=true] strong{display:none;}.rail-head[data-compact=true] .rail-language-control{flex:1;max-width:none;}
+    .rail-head strong{display:flex;align-items:center;gap:7px;flex:1;min-width:0;overflow:hidden;white-space:nowrap;}.rail-brand-name{min-width:0;overflow:hidden;text-overflow:ellipsis;}.brand-symbol{display:block;flex:none;width:20px;height:20px;background-color:currentColor;-webkit-mask:url(${JSON.stringify(symbolURL)}) center/contain no-repeat;mask:url(${JSON.stringify(symbolURL)}) center/contain no-repeat;mask-mode:alpha;}.rail-head button,.rail-expand{display:flex;align-items:center;justify-content:center;box-sizing:border-box;height:32px;font:400 13px/20px var(--gf-font,system-ui);padding:0 8px;border:0;background:transparent;color:var(--gf-accent,#1d9bf0);cursor:pointer;flex-shrink:0;}.rail-head button:hover,.rail-expand:hover{background:rgba(127,127,127,.12);}.rail-head button:focus-visible,.rail-expand:focus-visible{outline:2px solid var(--gf-accent,#1d9bf0);outline-offset:-2px;}
+    .rail-head[data-compact=true] strong{display:none;}
     .rail-head .rail-collapse,.rail-expand{width:32px;padding:0;}.rail-collapse svg,.rail-expand svg{width:18px;height:18px;display:block;}.rail-expand{position:absolute;z-index:2;box-sizing:border-box;border:1px solid var(--gf-border,#2f3336);background:var(--gf-bg,#000);pointer-events:auto;}
     .rail-expand-mark{display:flex;align-items:center;justify-content:center;width:20px;height:20px;color:var(--gf-fg,#e7e9ea);}
     .rail-head .rail-settings,.rail-head .rail-history{width:32px;padding:0;}.rail-settings svg,.rail-history svg{width:18px;height:18px;display:block;}
+    .rail-resize{position:absolute;z-index:3;width:8px;cursor:ew-resize;touch-action:none;pointer-events:auto;outline:none}.rail-resize::after{content:"";position:absolute;top:0;bottom:0;left:3px;width:2px;background:var(--gf-border,#2f3336)}.rail-resize:hover::after,.rail-resize:focus-visible::after{background:var(--gf-accent,#1d9bf0)}.rail-resize[hidden]{display:none!important;}
     .rail[hidden],.rail-head[hidden],.rail-expand[hidden]{display:none!important;}
     .rail-separators{position:absolute;z-index:2;overflow:hidden;pointer-events:none;}
     .rail-separators[hidden]{display:none!important;}
@@ -61,24 +63,24 @@
   const rail=node('aside','rail');
   const railHeader=node('header','rail-head'),railBrand=node('strong','rail-brand'),brandMark=node('span','brand-symbol');
   brandMark.setAttribute('aria-hidden','true');railBrand.append(brandMark,node('span','rail-brand-name','SuperX'));railHeader.append(railBrand);
-  const railLanguage=node('select','rail-language');
-  for(const item of Core.LANGUAGES){const option=node('option','',item.value==='auto'?t('lang.auto').split(' · ')[0]:item.label);option.value=item.value;railLanguage.append(option);}
-  railLanguage.value=settings.language;railLanguage.addEventListener('change',()=>{railLanguage.disabled=true;postControl({type:'SET_LANGUAGE',language:railLanguage.value});});
   const railToggle=node('button','rail-toggle');railToggle.type='button';railToggle.addEventListener('click',()=>{railToggle.disabled=true;postControl({type:'SET_ENABLED',enabled:!settings.enabled});});
   const railOptions=node('button','rail-settings');railOptions.append(gear());railOptions.addEventListener('click',()=>openSettings());
   const railHistory=node('button','rail-history');railHistory.type='button';
   const historyIcon=document.createElementNS('http://www.w3.org/2000/svg','svg');historyIcon.setAttribute('viewBox','0 0 24 24');historyIcon.setAttribute('fill','none');historyIcon.setAttribute('stroke','currentColor');historyIcon.setAttribute('stroke-width','1.7');historyIcon.setAttribute('aria-hidden','true');
   const historyPath=document.createElementNS('http://www.w3.org/2000/svg','path');historyPath.setAttribute('d','M3 11a9 9 0 1 1 2.6 7.3M3 4v7h7M12 7v5l3 2');historyPath.setAttribute('stroke-linecap','round');historyPath.setAttribute('stroke-linejoin','round');historyIcon.append(historyPath);railHistory.append(historyIcon);railHistory.addEventListener('click',()=>openHistory());
-  const railLanguageControl=node('div','rail-language-control'),languageChevron=chevron('down');languageChevron.classList.add('language-chevron');railLanguageControl.append(railLanguage,languageChevron);
   const railCollapse=node('button','rail-collapse');railCollapse.append(chevron('left'));railCollapse.setAttribute('aria-label','收起 SuperX');railCollapse.setAttribute('aria-expanded','true');railCollapse.title='收起右栏，停止新的分析，保留正在生成的结果';railCollapse.addEventListener('click',()=>setCollapsed(true,true));
   const railExpand=node('button','rail-expand'),expandMark=node('span','rail-expand-mark');
   expandMark.setAttribute('aria-hidden','true');expandMark.append(node('span','brand-symbol'));railExpand.append(expandMark);railExpand.setAttribute('aria-label','展开 SuperX');railExpand.setAttribute('aria-expanded','false');railExpand.title='展开 SuperX';railExpand.hidden=true;railExpand.addEventListener('click',()=>setCollapsed(false,true));
   const railSeparators=node('div','rail-separators');railSeparators.setAttribute('aria-hidden','true');
-  railHeader.append(railLanguageControl,railToggle,railHistory,railOptions,railCollapse);overlayShadow.append(rail,railHeader,railExpand,railSeparators);
+  const railResize=node('div','rail-resize');railResize.tabIndex=0;railResize.setAttribute('role','separator');railResize.setAttribute('aria-orientation','vertical');
+  railResize.addEventListener('pointerdown',beginRailResize);railResize.addEventListener('pointermove',moveRailResize);railResize.addEventListener('pointerup',finishRailResize);railResize.addEventListener('pointercancel',cancelRailResize);railResize.addEventListener('blur',cancelRailResize);
+  railResize.addEventListener('dblclick',()=>setRailWidth(0,true));railResize.addEventListener('keydown',railResizeKey);window.addEventListener('blur',cancelRailResize);
+  railHeader.append(railToggle,railHistory,railOptions,railCollapse);overlayShadow.append(rail,railHeader,railExpand,railSeparators,railResize);
   refreshHeaderLanguage();
   document.body.append(overlay);
   let layoutFrame = null, themeDirty = true, themeSignature = '', themePrimary = null;
   const observedNativeCells=new Set(),observedNativeHeaders=new Set();
+  let observedNativeSearch;
   const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(()=>scheduleLayout()) : null;
   const observer = new IntersectionObserver(changes=>{
     for(const change of changes) {
@@ -172,7 +174,6 @@
     draftComposer?.connectionLost(interruptionKey);
     const previousPort=port;port=undefined;
     try {previousPort?.disconnect();}catch{/* The old context may already be gone. */}
-    railLanguage.disabled=!idle;
     for(const entry of allEntries()) {
       clearRetries(entry);
       const interrupted=['queued','running','retry-wait'].includes(entry.status)||wakeActions.has(wakeKey(entry,'analysis'));
@@ -263,8 +264,7 @@
     const direction=uiLanguage==='ar'?'rtl':'ltr';
     rail.setAttribute('lang',uiLanguage);rail.setAttribute('dir',direction);
     railHeader.setAttribute('lang',uiLanguage);railHeader.setAttribute('dir',direction);
-    rail.setAttribute('aria-label',t('aria.rail'));railLanguage.setAttribute('aria-label',t('aria.outputLanguage'));
-    const auto=Array.from(railLanguage.children).find(option=>option.value==='auto');if(auto)auto.textContent=t('lang.auto').split(' · ')[0];railLanguage.title=t(settings.language==='auto'?'lang.auto':'aria.outputLanguage');
+    rail.setAttribute('aria-label',t('aria.rail'));railResize.setAttribute('aria-label',t('rail.resize'));railResize.title=t('rail.resizeHint');
     railOptions.setAttribute('aria-label',t('common.settings'));railOptions.title=t(needsPageRefresh?'status.refreshRequired':!providerReady?(settings.provider==='oauth'?'oauth.login':settings.provider==='build'?'popup.setupBuild':'common.enterKey'):'common.settings');
     railHistory.setAttribute('aria-label',t('common.history'));railHistory.title=t('common.history');
     railCollapse.setAttribute('aria-label',t('common.collapse'));railCollapse.title=t('tooltip.collapse');
@@ -453,10 +453,11 @@
     lookup.timer=setTimeout(()=>{
       if(cacheLookups.get(requestId)!==lookup)return;
       cacheLookups.delete(requestId);
-      for(const item of lookup.entries)if(item.cacheLookupId===requestId)item.cacheLookupId=undefined;
+      for(const item of lookup.entries)if(item.cacheLookupId===requestId){item.cacheLookupId=undefined;refreshCard(item);}
       tick();
     },5000);
     if(!post({type:'LOOKUP_CACHED_POST',requestId,post:entry.post,nativeAccount:currentNativeAccount()}))forgetCacheLookup(entry,true);
+    if(!automaticEntry(entry))refreshCard(entry);
     return Boolean(entry.cacheLookupId);
   }
   function receiveSavedAnswer(message) {
@@ -469,7 +470,7 @@
         lookup.path===location.pathname&&savedAnswerIdentity(entry)===lookup.lookupKey;
       if(!current)continue;
       if(reuseAnalysis(entry,true))continue;
-      if(message.type==='CACHE_MISS'){entry.cacheLookupDeferred=message.deferred===true;continue;}
+      if(message.type==='CACHE_MISS'){entry.cacheLookupDeferred=message.deferred===true;refreshCard(entry);continue;}
       if(document.hidden||collapsed||syncXModalVisibility()||!eligibility(entry.article).eligible){entry.cacheLookupKey=undefined;continue;}
       entry.analysisKey=analysisIdentity(entry);entry.analysisVersion=(entry.analysisVersion||0)+1;
       applyAnalysisResult(entry,{...lookup,entry},message);
@@ -552,6 +553,7 @@
       if(message.ok!==true){for(const id of batch.ids)historySeen.delete(id);historyRetryAt=Date.now()+5000;}
       return;
     }
+    if(message.type==='RAIL_WIDTH'){if(!resizeDrag){customRailWidth=message.width;scheduleLayout();}return;}
     if(message.type==='RAIL_VISIBILITY'){setCollapsed(message.collapsed);return;}
     if(message.type==='CONFIG') {
       hasConfig=true;awaitingConfig=true;workerSleeping=false;reconnectFailures=0;
@@ -576,6 +578,7 @@
       const identity=value=>JSON.stringify([value.provider,value.apiModel,value.apiReasoningEffort,value.oauthModel,value.oauthReasoningEffort,value.buildModel,value.buildReasoningEffort,value.buildTransport,value.buildPort,value.language,value.webSearch,value.xSearch,value.apiVerification,value.explanationMode]);
       const previous=identity(settings),dwellChanged=settings.dwellMs!==nextSettings.dwellMs;
       const pausing=settings.enabled&&!nextSettings.enabled;
+      if(!resizeDrag&&!wakeControls.has('SET_RAIL_WIDTH'))customRailWidth=Number.isSafeInteger(message.railWidth)&&message.railWidth>=220?message.railWidth:0;
       const wasReady=providerReady;
       // A same-generation native fault closes admission; accepted requests
       // retain their own terminal events. Changed identities/configurations
@@ -598,8 +601,6 @@
         if(entry.status==='done'&&entry.connectionStatus.key)status(entry,entry.connectionStatus.key,entry.connectionStatus.vars);
         delete entry.connectionStatus;
       }
-      if(!Core.LANGUAGES.some(item=>item.value===settings.language)&&!Array.from(railLanguage.children).some(item=>item.value===settings.language)){const option=node('option','',settings.language);option.value=settings.language;railLanguage.append(option);}
-      railLanguage.value=settings.language;railLanguage.disabled=false;
       refreshHeaderLanguage();
       const changed=accountChanged||previous!==identity(settings);
       // Per-answer failures never freeze other posts, including legacy
@@ -623,15 +624,10 @@
       awaitingConfig=false;railToggle.disabled=false;
       for(const [type,control] of wakeControls){
         wakeControls.delete(type);
-        if(type==='SET_LANGUAGE'&&control.language===settings.language)continue;
-        if(type==='SET_LANGUAGE')awaitingConfig=true;
         if(!post(control))return;
       }
       for(const entry of allEntries()){refreshCard(entry);}
       scheduleLayout();configureDraft();
-      // SET_LANGUAGE is acknowledged by a new CONFIG. Wait for that snapshot
-      // so a waking feed cannot bill for an obsolete answer language.
-      if(awaitingConfig){railLanguage.disabled=true;handshakeTimer=setTimeout(()=>connectionLost(new Error('Language configuration timed out')),8000);return;}
       if(providerReady||answerCacheReady){
         const actions=[...wakeActions.values()];wakeActions.clear();
         for(const action of actions){if(!connected||awaitingConfig)break;action();}
@@ -1021,11 +1017,66 @@
     }
     return {top:0,height:Math.min(53,viewport.height),borderWidth};
   }
+  function nativeSearch() {
+    return document.querySelector('[data-testid="sidebarColumn"]')?.querySelector('form[role="search"]')||null;
+  }
+  function searchFocused() {
+    const search=nativeSearch();return Boolean(search&&document.activeElement&&search.contains(document.activeElement));
+  }
+  document.addEventListener('focusin',scheduleLayout,true);
+  document.addEventListener('focusout',scheduleLayout,true);
+  function searchHeaderGeometry(header,viewport) {
+    const search=nativeSearch();
+    if(observedNativeSearch!==search){if(observedNativeSearch)resizeObserver?.unobserve(observedNativeSearch);if(search)resizeObserver?.observe(search);observedNativeSearch=search;}
+    const rect=search?.getBoundingClientRect();
+    if(!rect||rect.width<=0||rect.height<=0||rect.bottom<=0||rect.top>=viewport.height)return header;
+    const top=Math.min(viewport.height,Math.max(0,rect.bottom)+8);
+    return {top,height:Math.min(40,viewport.height-top),borderWidth:1};
+  }
+  function setRailWidth(width,persist=false){
+    customRailWidth=width;scheduleLayout();
+    if(persist)postControl({type:'SET_RAIL_WIDTH',width});
+  }
+  function beginRailResize(event){
+    if(resizeDrag||event.button!==0)return;
+    const bounds=currentRailBounds();if(bounds.hidden)return;
+    event.preventDefault();event.stopPropagation();
+    resizeDrag={id:event.pointerId,start:event.clientX,width:bounds.width,preferred:customRailWidth};
+    railResize.focus({preventScroll:true});railResize.setPointerCapture(event.pointerId);
+  }
+  function moveRailResize(event){
+    if(!resizeDrag||event.pointerId!==resizeDrag.id)return;
+    const bounds=currentRailBounds();if(bounds.hidden){cancelRailResize();return;}
+    const width=Math.round(Math.max(220,Math.min(innerWidth-bounds.left,resizeDrag.width+event.clientX-resizeDrag.start)));
+    setRailWidth(width);
+  }
+  function finishRailResize(event){
+    if(!resizeDrag||event.pointerId!==resizeDrag.id)return;
+    const previous=resizeDrag;resizeDrag=null;
+    if(railResize.hasPointerCapture(previous.id))railResize.releasePointerCapture(previous.id);
+    if(Math.round(currentRailBounds().width)!==Math.round(previous.width))setRailWidth(customRailWidth,true);
+    else setRailWidth(previous.preferred);
+  }
+  function cancelRailResize(){
+    if(!resizeDrag)return;
+    const previous=resizeDrag;resizeDrag=null;
+    if(railResize.hasPointerCapture(previous.id))railResize.releasePointerCapture(previous.id);
+    setRailWidth(previous.preferred);
+  }
+  function railResizeKey(event){
+    if(event.key==='Escape'){cancelRailResize();return;}
+    if(resizeDrag||!['ArrowLeft','ArrowRight','Home'].includes(event.key))return;
+    event.preventDefault();
+    if(event.key==='Home'){setRailWidth(0,true);return;}
+    const bounds=currentRailBounds();if(bounds.hidden)return;
+    const step=event.shiftKey?64:16;
+    setRailWidth(Math.round(Math.max(220,Math.min(innerWidth-bounds.left,bounds.width+(event.key==='ArrowRight'?step:-step)))),true);
+  }
   function currentRailBounds() {
     if(syncXModalVisibility())return {hidden:true,reason:'x-modal-open',left:0,top:0,width:0,height:0};
     const viewport={width:document.documentElement.clientWidth||innerWidth,height:innerHeight};
     const primary=document.querySelector('[data-testid="primaryColumn"]'),sidebar=document.querySelector('[data-testid="sidebarColumn"]');
-    return Layout.railBounds(primary?.getBoundingClientRect(),sidebar?.getBoundingClientRect(),viewport);
+    return Layout.railBounds(primary?.getBoundingClientRect(),sidebar?.getBoundingClientRect(),viewport,{preferredWidth:customRailWidth});
   }
   function pauseUnseenRailQueue({preserveStarted=false}={}) {
     // No room for the result means no new paid work. Preserve requests whose
@@ -1033,19 +1084,19 @@
     cancelDwellTimer();queue.clear();
     for(const entry of allEntries()){entry.pending=false;entry.since=0;}
     for(const [id,request] of requests)if(request.task==='comments'?['queued','retry-wait'].includes(request.entry.commentStatus):['queued','retry-wait'].includes(request.entry.status)) {
-      if(request.railCancellation||explicitRequest(request)||(preserveStarted||request.originatedPrefetch)&&request.started)continue;
+      if(request.railCancellation||explicitRequest(request)||(preserveStarted||request.task==='analysis'||request.originatedPrefetch)&&request.started)continue;
       request.railCancellation=true;
       // Leave the request attached until cancellation is acknowledged. It may
       // already be running while the START message is still crossing the port.
-      post({type:'CANCEL_IF_QUEUED',requestId:id,...(preserveStarted||request.originatedPrefetch?{preserveStarted:true}:{})});
+      post({type:'CANCEL_IF_QUEUED',requestId:id,...(preserveStarted||request.task==='analysis'||request.originatedPrefetch?{preserveStarted:true}:{})});
     }
   }
   function positionCards() {
     syncNativeAccount();
     const blocked=syncXModalVisibility();
-    overlay.hidden=document.hidden || !supportedPage()||blocked;
+    overlay.hidden=document.hidden || !supportedPage()||blocked||searchFocused();
     if(overlay.hidden){
-      if(blocked){rail.hidden=railHeader.hidden=railExpand.hidden=railSeparators.hidden=true;for(const entry of allEntries())entry.card.hidden=true;pauseUnseenRailQueue();}
+      if(blocked){rail.hidden=railHeader.hidden=railExpand.hidden=railSeparators.hidden=railResize.hidden=true;for(const entry of allEntries())entry.card.hidden=true;pauseUnseenRailQueue();}
       syncNativeCells(null,null);syncNativeHeaders();return;
     }
     // Focusing a descendant can scroll an overflow-hidden ancestor. Only each
@@ -1072,16 +1123,18 @@
     const primary=document.querySelector('[data-testid="primaryColumn"]');
     const sidebar=document.querySelector('[data-testid="sidebarColumn"]');
     const primaryRect=primary?.getBoundingClientRect(),nativeCells=syncNativeCells(primary,primaryRect);
-    const bounds=Layout.railBounds(primaryRect,sidebar?.getBoundingClientRect(),viewport);
-    rail.hidden=railHeader.hidden=railSeparators.hidden=bounds.hidden||collapsed;railExpand.hidden=bounds.hidden||!collapsed;
+    const bounds=Layout.railBounds(primaryRect,sidebar?.getBoundingClientRect(),viewport,{preferredWidth:customRailWidth});
+    rail.hidden=railHeader.hidden=railSeparators.hidden=railResize.hidden=bounds.hidden||collapsed;railExpand.hidden=bounds.hidden||!collapsed;
     if(bounds.hidden){syncNativeHeaders();pauseUnseenRailQueue();for(const item of items)item.id.card.hidden=true;return;}
     syncTheme(primary);
-    const header=headerGeometry(primary,viewport),headerHeight=header.top+header.height;
+    const header=searchHeaderGeometry(headerGeometry(primary,viewport),viewport),headerHeight=header.top+header.height;
     railHeader.dataset.compact=String(bounds.width<310);
     railHeader.style.borderBottomWidth=header.borderWidth+'px';
-    for(const [element,geometry] of [[rail,bounds],[railHeader,{...bounds,top:header.top,height:header.height}],[railExpand,{left:bounds.left,top:header.top,width:32,height:header.height}]])for(const name of ['left','top','width','height']) {
+    for(const [element,geometry] of [[rail,{...bounds,top:header.top,height:Math.max(0,viewport.height-header.top)}],[railHeader,{...bounds,top:header.top,height:header.height}],[railExpand,{left:bounds.left,top:header.top,width:32,height:header.height}]])for(const name of ['left','top','width','height']) {
       const value=geometry[name]+'px';if(element.style[name]!==value)element.style[name]=value;
     }
+    railResize.style.left=(bounds.left+bounds.width-8)+'px';railResize.style.top=header.top+'px';railResize.style.height=Math.max(0,viewport.height-header.top)+'px';
+    railResize.setAttribute('aria-valuemin','220');railResize.setAttribute('aria-valuemax',String(Math.floor(viewport.width-bounds.left)));railResize.setAttribute('aria-valuenow',String(Math.round(bounds.width)));
     if(collapsed){for(const item of items)item.id.card.hidden=true;return;}
     const extraLines=[];
     for(const cell of nativeCells)extraLines.push(...nativeCellSeparators(cell,primaryRect,viewport));
@@ -1125,7 +1178,7 @@
     for(const [id,request] of requests)if(request.entry===entry&&!explicitRequest(request)&&
         (request.task==='comments'?['queued','retry-wait'].includes(entry.commentStatus):['queued','retry-wait'].includes(entry.status))&&!request.railCancellation){
       if(queuedEntryEligible(entry,lookaheadWindow(),request.prefetch))continue;
-      request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.originatedPrefetch?{preserveStarted:true}:{})});
+      request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.task==='analysis'||request.originatedPrefetch?{preserveStarted:true}:{})});
     }
     pruneDetachedEntries();
   }
@@ -1189,20 +1242,27 @@
   }
   function refreshCard(entry) {
     entry.ui.box.setAttribute('aria-label',t('aria.result'));
-    entry.ui.retry.textContent=t('common.retry');entry.ui.generateComments.textContent=t('common.generateComments');
+    const manualReply=entry.status==='new'&&!automaticEntry(entry);
+    entry.ui.retry.textContent=t(manualReply?'common.analyzeReply':'common.retry');entry.ui.generateComments.textContent=t('common.generateComments');
     entry.ui.diagnosticLabel.textContent=t('common.diagnostics');
     if(entry.status==='new') {
-      status(entry,!settings.enabled?'status.disabled':!connected&&!workerSleeping?(needsPageRefresh?'status.refreshRequired':'status.connectionLost'):!providerReady?needsProvider():entry.pending?'status.queued':'status.waiting');
+      status(entry,!settings.enabled?'status.disabled':!connected&&!workerSleeping?(needsPageRefresh?'status.refreshRequired':'status.connectionLost'):!providerReady?needsProvider():manualReply?'status.replyManual':entry.pending?'status.queued':'status.waiting');
       note(entry,'');
       entry.ui.retry.hidden=true;
     }
     else if(entry.statusKey)status(entry,entry.statusKey,entry.statusVars);
     if(entry.noteKey)entry.ui.note.textContent=t(entry.noteKey);
     if(entry.cached)entry.ui.status.prepend(document.createTextNode(t('status.cached')+' · '));
-    entry.ui.retry.disabled=!usableConnection()||!settings.enabled||['queued','running','retry-wait'].includes(entry.status)||wakeActions.has(wakeKey(entry,'analysis'));
+    entry.ui.retry.disabled=!usableConnection()||!settings.enabled||['queued','running','retry-wait'].includes(entry.status)||wakeActions.has(wakeKey(entry,'analysis'))||manualReply&&Boolean(entry.cacheLookupId||entry.cacheLookupDeferred);
     if(!providerReady)entry.ui.retry.hidden=true;
-    else if(['done','error'].includes(entry.status))entry.ui.retry.hidden=false;
+    else if(['done','error'].includes(entry.status)||manualReply)entry.ui.retry.hidden=false;
     refreshComments(entry);refreshRetries(entry);syncLoading(entry);refreshUsage(entry);
+  }
+  // A post detail page contains the selected post plus replies/ancestors.
+  // Only the URL-selected post is an automatic analysis target there.
+  function automaticEntry(entry) {
+    const selected=location.pathname.match(/\/status\/(\d+)(?:\/|$)/)?.[1];
+    return !selected||String(entry.post.id)===selected;
   }
   function eligibility(article) {
     return Core.visibilityEligibility(article.getBoundingClientRect(),{width:innerWidth,height:innerHeight},{minRatio:0,minVisiblePx:1});
@@ -1211,7 +1271,7 @@
     const viewport={width:innerWidth,height:innerHeight},rows=[];
     const displayedIds=new Set([...entries.values()].filter(entry=>entry.article.isConnected&&eligibility(entry.article).eligible).map(entry=>entry.post.id));
     for(const entry of entries.values()) {
-      if(!entry.article.isConnected)continue;
+      if(!entry.article.isConnected||!automaticEntry(entry))continue;
       const rect=entry.article.getBoundingClientRect();
       rows.push({entry,id:entry.post.id,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,
         visible:displayedIds.has(entry.post.id),isPromoted:Boolean(entry.post.isPromoted)});
@@ -1275,7 +1335,7 @@
         entry.since=entry.article.isConnected&&visible.has(entry.article)&&eligibility(entry.article).eligible?now:0;
         // A START can already be crossing the port. Keep this subscription
         // attached and ask the worker to cancel only if it truly has not begun.
-        if(!request.railCancellation){request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.originatedPrefetch?{preserveStarted:true}:{})});}
+        if(!request.railCancellation){request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.task==='analysis'||request.originatedPrefetch?{preserveStarted:true}:{})});}
       }
     }
     scheduleLayout();
@@ -1302,7 +1362,7 @@
     const blocked=syncXModalVisibility();
     recordHistory();
     if(blocked){pauseUnseenRailQueue();return;}
-    if(document.hidden || collapsed || !supportedPage()){resetDwellWaits();return;}
+    if(document.hidden || collapsed || !supportedPage()||searchFocused()){resetDwellWaits();return;}
     if(currentRailBounds().hidden){pauseUnseenRailQueue();return;}
     if(location.pathname!==lastPath){scheduleScan();return;}
     for(const article of visible){
@@ -1314,7 +1374,7 @@
     if(!connected){
       resetDwellWaits();
       if(workerSleeping&&[...visible].some(article=>{
-        const entry=entries.get(article);return entry?.status==='new'&&article.isConnected&&eligibility(article).eligible;
+        const entry=entries.get(article);return entry?.status==='new'&&automaticEntry(entry)&&article.isConnected&&eligibility(article).eligible;
       }))connect();
       return;
     }
@@ -1331,14 +1391,14 @@
       const entry=request.entry,queued=request.task==='comments'?['queued','retry-wait'].includes(entry.commentStatus):['queued','retry-wait'].includes(entry.status);
       if(!queued||request.railCancellation||explicitRequest(request))continue;
       if(!queuedEntryEligible(entry,lookahead,request.task==='analysis'&&request.prefetch)){
-        entry.since=0;request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.originatedPrefetch?{preserveStarted:true}:{})});
+        entry.since=0;request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.task==='analysis'||request.originatedPrefetch?{preserveStarted:true}:{})});
       }
     }
     for(const article of visible) {
       const entry=entries.get(article);if(!entry||!article.isConnected)continue;
       const visibility=eligibility(article);
       if(!visibility.eligible){entry.since=0;entry.pending=false;queue.remove(entry.post.id);continue;}
-      if(entry.status!=='new'||entry.cacheLookupId||entry.cacheLookupDeferred)continue;
+      if(entry.status!=='new'||!automaticEntry(entry)||entry.cacheLookupId||entry.cacheLookupDeferred)continue;
       if(!entry.since)entry.since=now;
       const deadline=entry.since+settings.dwellMs;
       if(deadline>now){nextDwell=nextDwell?Math.min(nextDwell,deadline):deadline;continue;}
@@ -1381,8 +1441,9 @@
       if(!post({type:'HISTORY_VISIT',posts,historyEpoch,batchId})){historyPending.delete(batchId);for(const id of ids)historySeen.delete(id);historyRetryAt=Date.now()+5000;return;}
     }
   }
-  function submit(entry,force,prefetch=false) {
-    if(force&&afterWake(entry,'analysis',()=>submit(entry,true)))return;
+  function submit(entry,force,prefetch=false,manual=false) {
+    if(!force&&!manual&&!automaticEntry(entry))return;
+    if((force||manual)&&afterWake(entry,'analysis',()=>submit(entry,force,prefetch,manual)))return;
     if(!settings.enabled||!connected||!(providerReady||(!force&&answerCacheReady))||currentRailBounds().hidden)return;
     if(awaitingConfig)return;
     if([...requests.values()].some(r=>r.entry===entry&&r.task==='analysis'))return;
@@ -1397,7 +1458,7 @@
     entry.pending=false;entry.since=0;queue.remove(entry.post.id);entry.status='queued';entry.phase='';entry.verificationBase='';entry.verificationStarted=false;entry.verificationStart=undefined;entry.result=null;entry.cached=false;entry.requestDiagnostics=undefined;setVerificationFailure(entry,null,false);status(entry,'status.queued');entry.ui.retry.hidden=true;
     if(force||!entry.ui.answer.textContent)renderAnswer(entry,'',true);
     renderSources(entry,[]);note(entry,'');entry.ui.diagnostics.hidden=true;entry.ui.diagnosticText.textContent='';
-    requests.set(requestId,{...requestSnapshot(entry,requestId),force:force===true,prefetch,originatedPrefetch:prefetch,analysisKey:entry.analysisKey});
+    requests.set(requestId,{...requestSnapshot(entry,requestId),force:force===true,manual,prefetch,originatedPrefetch:prefetch,analysisKey:entry.analysisKey});
     entry.analysisUsage=null;captureUsage(entry,'analysis',{},requests.get(requestId),false,true);refreshUsage(entry);
     post({type:'ANALYZE',requestId,post:entry.post,force,prefetch,nativeAccount:currentNativeAccount()});scheduleLayout();
   }
@@ -1561,7 +1622,7 @@
     const {indicator:verificationThinking,label:verificationThinkingLabel}=waitingIndicator('thinking verification-thinking');
     verificationThinkingLabel.classList.add('shimmer');
     const diagnostics=node('details','diagnostics'),diagnosticText=node('pre'),diagnosticLabel=node('summary','',t('common.diagnostics'));diagnostics.hidden=true;diagnostics.append(diagnosticLabel,diagnosticText);
-    const retry=node('button','retry',t('common.retry'));retry.hidden=true;retry.addEventListener('click',()=>{if(retry.disabled||[...requests.values()].some(r=>r.entry===entry&&r.task==='analysis'))return;for(const pending of allEntries())if(pending.status==='new')refreshCard(pending);submit(entry,true);});
+    const retry=node('button','retry',t('common.retry'));retry.hidden=true;retry.addEventListener('click',()=>{if(retry.disabled||[...requests.values()].some(r=>r.entry===entry&&r.task==='analysis'))return;for(const pending of allEntries())if(pending.status==='new')refreshCard(pending);if(entry.status==='new'&&!automaticEntry(entry)){if(entry.cacheLookupId||entry.cacheLookupDeferred)return;submit(entry,false,false,true);}else submit(entry,true);});
     const generateButton=node('button','generate-comments',t('common.generateComments'));generateButton.addEventListener('click',()=>generateComments(entry));
     const comments=node('div','comments'),commentStatus=node('div','comment-status'),copyStatus=node('div','copy-status');commentStatus.hidden=true;comments.hidden=true;commentStatus.setAttribute('role','status');copyStatus.setAttribute('role','status');
     const commentHeading=node('div','comment-heading'),commentHint=node('div','comment-hint');commentHeading.hidden=commentHint.hidden=true;

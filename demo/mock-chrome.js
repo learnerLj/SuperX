@@ -5,6 +5,7 @@
   const keyState=query.get('security')==='migration'?'migration':query.get('security')==='missing'?'missing':'ready';
   const provider=['api','build','oauth'].includes(query.get('provider'))?query.get('provider'):XGrokCore.DEFAULT_SETTINGS.provider;
   const config={settings:XGrokCore.normalizeSettings({provider,apiVerification:'only',interfaceLanguage:query.get('interface')||'auto'}),ready:provider==='build'?query.get('permission')!=='denied'&&query.get('build')==='ready':keyState==='ready',keyState,buildStatus:provider==='build'?{installed:query.get('build')!=='missing',permission:query.get('permission')==='denied'?'denied':'granted',...(query.get('permission')==='denied'?{errorCode:'BUILD_PERMISSION_REQUIRED'}:{}),available:query.get('build')==='ready',authenticated:query.get('build')==='ready'?true:undefined}:undefined,used:0,collapsed:false};
+  config.railWidth=Number(localStorage.getItem('superx-demo-rail-width'))||0;
   const listeners=[],pending=new Map(),analysisCache=new Map();let calls=0,commentCalls=0,cancelled=0,verificationPreview=false,citationsPreview=false,urlBoundaryPreview=false,markdownPreview=false,verificationFailurePreview='';
   const simulatedVerificationFailures={
     OUTPUT_LIMIT:{code:'OUTPUT_LIMIT',stage:'verify',errorCode:'API_INCOMPLETE',reason:'max_output_tokens'},
@@ -106,6 +107,7 @@
           openPreviewSettings(message.focus);return;
         }
         if(message.type==='SET_ENABLED'){config.settings.enabled=message.enabled;configure();return;}
+        if(message.type==='SET_RAIL_WIDTH'){config.railWidth=message.width;localStorage.setItem('superx-demo-rail-width',String(message.width));emit({type:'RAIL_WIDTH',width:message.width});return;}
         if(message.type==='SET_LANGUAGE'){config.settings.language=message.language;configure();return;}
         if(message.type==='SET_RAIL_COLLAPSED'){
           config.collapsed=Boolean(message.collapsed);

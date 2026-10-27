@@ -142,6 +142,10 @@ function fixture({postCount=2,connectError=null,historyAck=true,cacheLookup='mis
       });
       nodes.push(this);
     }
+    focus() {document.activeElement=this;}
+    setPointerCapture(id) {this.capturedPointer=id;}
+    hasPointerCapture(id) {return this.capturedPointer===id;}
+    releasePointerCapture(id) {if(this.capturedPointer===id)this.capturedPointer=undefined;}
     get children() { return this.childNodes.filter(node => node instanceof Element); }
     get parentElement() { return this.parentNode instanceof Element ? this.parentNode : null; }
     get isConnected() { return this === document.body || this === document.head || Boolean(this.parentNode?.isConnected || this.host?.isConnected); }
@@ -200,6 +204,7 @@ function fixture({postCount=2,connectError=null,historyAck=true,cacheLookup='mis
     if (testId) return node.getAttribute('data-testid') === testId;
     const attribute = selector.match(/^\[([\w-]+)=["']([^"']+)["']\]$/);
     if(attribute)return node.getAttribute(attribute[1])===attribute[2];
+    if(selector==='form[role="search"]')return node.tagName==='FORM'&&node.getAttribute('role')==='search';
     if(selector==='dialog[open]')return node.tagName==='DIALOG'&&node.hasAttribute('open');
     if(selector==='a[href]')return node.tagName==='A'&&(node.hasAttribute('href')||typeof node.href==='string');
     if (selector.startsWith('#')) return node.id === selector.slice(1);
@@ -559,7 +564,7 @@ test('scroll and viewport resizing reposition only the independent overlay', () 
   const page = fixture(); page.configure(); page.intersect();
   const card = page.displayedCards()[0]; assert.ok(card, 'A card should be visible with right-side room');
   const initial = card.getBoundingClientRect();
-  assert.equal(initial.left, page.primary.rect.right);
+  assert.equal(initial.left, page.sidebar.rect.left);
   assert.equal(initial.right, page.sidebar.rect.right, 'The card must reach the widest sidebar edge');
   assert.equal(initial.top, page.articles[0].rect.top);
   assert.equal(initial.bottom,page.articles[0].rect.bottom,'Result rows end at the same separator as their posts');
@@ -655,7 +660,7 @@ test('queued-only cancellation of a comment draft preserves its explanation and 
 test('the full rail can collapse and expand without disabling analysis or changing X geometry',()=>{
   const page=fixture();page.configure();page.intersect();
   const rail=page.nodes.find(node=>node.className==='rail'),header=page.nodes.find(node=>node.className==='rail-head');
-  assert.ok(rail);assert.equal(rail.style.left,'870px');assert.equal(rail.style.width,'380px');
+  assert.ok(rail);assert.equal(rail.style.left,'900px');assert.equal(rail.style.width,'350px');
   assert.equal(rail.style.top,'0px');assert.equal(rail.style.height,'960px');assert.equal(header.style.left,rail.style.left);
   const collapse=header.children.find(node=>node.className==='rail-collapse');collapse.emit('click');page.flush();
   const expand=page.nodes.find(node=>node.className==='rail-expand');
@@ -699,16 +704,13 @@ test('collapsing drops queued work but retains running output and restores it wi
   assert.deepEqual(page.writes,[]);
 });
 
-test('persisted rail visibility and header language controls keep the per-post UI minimal',()=>{
+test('persisted rail visibility keeps controls minimal with language configured in settings',()=>{
   const page=fixture();page.port.onMessage.emit({type:'CONFIG',settings:core.DEFAULT_SETTINGS,ready:true,used:0,collapsed:true});page.flush();page.intersect();page.tick(2000);
   assert.equal(page.displayedCards().length,0);assert.equal(page.port.sent.some(message=>message.type==='ANALYZE'),false);
   page.port.onMessage.emit({type:'RAIL_VISIBILITY',collapsed:false});page.flush();
-  const select=page.nodes.find(node=>node.className==='rail-language');
-  assert.equal(select.value,'auto');assert.ok(select.children.some(node=>node.value==='ja'));
-  select.value='ja';select.emit('change');
-  assert.equal(select.disabled,true);assert.ok(page.port.sent.some(message=>message.type==='SET_LANGUAGE'&&message.language==='ja'));
-  page.configure({language:'ja'});assert.equal(select.disabled,false);assert.equal(select.value,'ja');
-  page.configure({language:'pt-BR'});assert.equal(select.value,'pt-BR');assert.ok(select.children.some(node=>node.value==='pt-BR'));
+  assert.equal(page.nodes.some(node=>node.className==='rail-language'),false);
+  page.configure({language:'ja'});page.configure({language:'pt-BR'});
+  assert.equal(page.port.sent.some(message=>message.type==='SET_LANGUAGE'),false);
   for(const card of page.cards()) {
     assert.equal(card.testShadow.querySelectorAll('button').some(button=>button.textContent==='设置'),false);
     assert.equal(card.testShadow.querySelectorAll('a').length,0,'No repeated original-post link');
@@ -836,7 +838,7 @@ test('fractional overlap cannot erase a native separator when the preceding answ
   assert.equal(page.cards()[0].getBoundingClientRect().bottom,page.articles[1].rect.top,'Overlapping answers still stop at the following post');
   assertRailLine(page,370,0.8,'rgb(47, 51, 54)');
   const layer=page.nodes.find(node=>node.className==='rail-separators');
-  assert.equal(layer.style.left,'870px');assert.equal(layer.style.width,'380px','The separator spans the entire rail');
+  assert.equal(layer.style.left,'900px');assert.equal(layer.style.width,'350px','The separator spans the entire rail');
   page.scroll(10.25);assertRailLine(page,359.75,0.8,'rgb(47, 51, 54)');assert.deepEqual(page.writes,[]);
 });
 
@@ -904,7 +906,7 @@ function nativePrimaryTabBar(page,{top=0,height=53,borderWidth=0.8}={}) {
 for(const withCell of [false,true])test('expanding an inline reply toolbar '+(withCell?'inside a timeline cell':'without a timeline cell')+' never moves the header or hides the running answer',()=>{
   const page=fixture({postCount:2});page.location.pathname='/test/status/100';page.location.href='https://x.com/test/status/100';page.tick();
   page.articles[0].rect={...page.articles[0].rect,top:90,bottom:610,height:520};page.articles[1].rect={...page.articles[1].rect,top:790,bottom:1070,height:280};
-  page.configure();page.intersect();const [first,reply]=page.port.sent.filter(message=>message.type==='ANALYZE'),[card,replyCard]=page.cards();
+  page.configure();page.intersect();const [card,replyCard]=page.cards();replyCard.testShadow.querySelector('.retry').emit('click');page.flush();const [first,reply]=page.port.sent.filter(message=>message.type==='ANALYZE');
   page.port.onMessage.emit({type:'START',requestId:first.requestId});page.port.onMessage.emit({type:'UPDATE',requestId:first.requestId,phase:'verify',text:'The original evidence is still streaming.',usage:{total_tokens:31},model:'grok-4.3'});
   page.port.onMessage.emit({type:'RESULT',requestId:reply.requestId,result:{provider:'api',text:'A reply finding below the composer.',verificationStatus:'completed',usage:{total_tokens:17},sources:[]}});page.flush();
   const header=page.nodes.find(node=>node.className==='rail-head'),box=card.testShadow.querySelector('.card');box.scrollTop=47;
@@ -2717,8 +2719,7 @@ test('X interface locale changes update labels without cancelling work, changing
   const before=page.port.sent.length;
   page.document.documentElement.lang='ja';page.port.onMessage.emit({type:'UI_LANGUAGE',language:'ja'});page.mutate([{type:'attributes',attributeName:'lang',target:page.document.documentElement}]);
   assert.equal(generate.textContent,ui.t('common.generateComments','ja'));
-  const select=page.nodes.find(node=>node.className==='rail-language');assert.equal(select.value,'en');
-  assert.equal(select.getAttribute('aria-label'),ui.t('aria.outputLanguage','ja'));
+  assert.equal(page.nodes.some(node=>node.className==='rail-language'),false);
   assert.equal(page.nodes.find(node=>node.className==='rail-settings').getAttribute('aria-label'),ui.t('common.settings','ja'));
   assert.equal(card.testShadow.querySelector('.answer').textContent,'An English explanation.');
   assert.equal(page.port.sent.slice(before).some(message=>['CANCEL','CANCEL_ALL','SET_LANGUAGE','SAVE_SETTINGS','ANALYZE','GENERATE_COMMENTS'].includes(message.type)),false);
@@ -2748,7 +2749,7 @@ test('manual SuperX language relabels the rail without restarting paid explanati
   page.configure({language:'en',interfaceLanguage:'zh-CN'});
   assert.equal(generate.textContent,ui.t('common.generateComments','zh-CN'));assert.equal(generate.disabled,true,'The original draft request remains in flight');
   assert.equal(page.nodes.find(node=>node.className==='rail-settings').getAttribute('aria-label'),ui.t('common.settings','zh-CN'));
-  assert.equal(page.nodes.find(node=>node.className==='rail-language').value,'en','Answer language is independent of interface language');
+  assert.equal(page.nodes.some(node=>node.className==='rail-language'),false);
   assert.equal(card.testShadow.querySelector('.answer').textContent,'An English explanation kept while relabeling.');
   assert.equal(page.cards()[1].testShadow.querySelector('.answer').textContent,'A second English explanation is streaming.');
   page.document.documentElement.lang='ja';page.mutate([{type:'attributes',attributeName:'lang',target:page.document.documentElement}]);
@@ -2757,7 +2758,7 @@ test('manual SuperX language relabels the rail without restarting paid explanati
   page.configure({language:'en',interfaceLanguage:'auto'});
   assert.equal(generate.textContent,ui.t('common.generateComments','ja'),'Auto immediately follows the latest X locale');
   for(const element of [rail,header]) {assert.equal(element.getAttribute('lang'),'ja');assert.equal(element.getAttribute('dir'),'ltr');}
-  assert.equal(page.nodes.find(node=>node.className==='rail-language').value,'en');
+  assert.equal(page.nodes.some(node=>node.className==='rail-language'),false);
   assert.equal(page.port.sent.slice(before).some(message=>['CANCEL','CANCEL_ALL','SET_LANGUAGE','SAVE_SETTINGS','ANALYZE','GENERATE_COMMENTS'].includes(message.type)),false);
   page.port.onMessage.emit({type:'RESULT',requestId:next.requestId,result:{text:'Second English explanation completed.',provider:'api'}});
   page.port.onMessage.emit({type:'COMMENT_RESULT',requestId:comments.requestId,comments:suggestions});page.flush();
@@ -2781,7 +2782,7 @@ test('manual interface locale also localizes Key onboarding while preserving aut
   assert.equal(page.port.sent.findLast(message=>message.type==='UI_LANGUAGE').language,'de');
   config('auto');
   assert.equal(card.testShadow.querySelector('.status-settings').textContent,ui.t('common.settings','de'));
-  assert.equal(page.nodes.find(node=>node.className==='rail-language').value,'auto');
+  assert.equal(page.nodes.some(node=>node.className==='rail-language'),false);
   assert.equal(page.port.sent.some(message=>['ANALYZE','GENERATE_COMMENTS','SET_LANGUAGE'].includes(message.type)),false);
   assert.deepEqual(page.writes,[]);
 });
@@ -3252,21 +3253,6 @@ test('a Key locked while the worker sleeps prevents deferred comment or analysis
   }
 });
 
-test('an idle answer-language change waits for its new CONFIG rather than analyzing in the stale language',()=>{
-  const {page,request,card}=tokenFixture();tokenResult(page,request,{usage:{total_tokens:30},model:'completed-model'});
-  page.port.onDisconnect.emit();page.flush();page.replacePort();
-  const language=page.nodes.find(node=>node.className==='rail-language');language.value='ja';language.emit('change');page.flush();
-  assert.equal(page.connectionAttempts(),2);assert.equal(language.disabled,true);
-  assert.equal(page.port.sent.some(message=>message.type==='SET_LANGUAGE'),false,'Wait for the freshly awakened settings snapshot first');
-  page.configure();page.tick(2000);
-  assert.deepEqual(page.port.sent.filter(message=>message.type==='SET_LANGUAGE').map(message=>message.language),['ja']);
-  assert.equal(page.port.sent.some(message=>['ANALYZE','GENERATE_COMMENTS'].includes(message.type)),false);
-  assert.equal(language.disabled,true,'The preference change is pending acknowledgement');
-  page.configure({language:'ja'});page.tick();
-  assert.equal(language.disabled,false);assert.equal(language.value,'ja');
-  assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,1);
-});
-
 test('a newly visible post wakes an idle worker and starts only its own first analysis',()=>{
   const page=fixture({postCount:2});
   page.articles[1].rect={...page.articles[1].rect,top:1200,bottom:1480};page.configure();page.intersect();page.tick();
@@ -3428,11 +3414,11 @@ test('collapsing or navigating cancels scheduled retries and late results cannot
   }
 });
 
-test('narrow rails and X modals ask the worker to cancel retry waits without canceling a crossed START',()=>{
+test('narrow rails and X modals retain started analysis retry waits while withdrawing comment retries',()=>{
   for(const action of ['resize','modal']){
     const page=fixture({postCount:1});page.configure();const analysis=page.port.sent.find(message=>message.type==='ANALYZE'),card=page.cards()[0];retryWait(page,analysis,{partialResult:{provider:'api',text:'Existing fact.',sources:[]}});card.testShadow.querySelector('.generate-comments').emit('click');const draft=page.port.sent.find(message=>message.type==='GENERATE_COMMENTS');retryWait(page,draft,{},true);const before=page.port.sent.length;
     if(action==='resize')page.resize(950);else{xModal(page,{ariaModal:true});page.mutate([{type:'childList',target:page.document.body}]);}page.flush();
-    const cancellations=page.port.sent.slice(before).filter(message=>message.type==='CANCEL_IF_QUEUED');assert.equal(cancellations.length,2,action);assert.equal(page.port.sent.slice(before).some(message=>['CANCEL','CANCEL_ALL'].includes(message.type)),false);
+    const cancellations=page.port.sent.slice(before).filter(message=>message.type==='CANCEL_IF_QUEUED');assert.ok(cancellations.some(message=>message.requestId===draft.requestId),action);assert.ok(cancellations.filter(message=>message.requestId===analysis.requestId).every(message=>message.preserveStarted),action);assert.equal(page.port.sent.slice(before).some(message=>['CANCEL','CANCEL_ALL'].includes(message.type)),false);
     page.port.onMessage.emit({type:'START',requestId:analysis.requestId,retryAttempt:1,maxRetries:5});page.port.onMessage.emit({type:'ERROR',requestId:draft.requestId,code:'CANCELLED'});page.port.onMessage.emit({type:'RESULT',requestId:analysis.requestId,result:{provider:'api',text:'Paid retry crossed cancellation.',sources:[],verificationStatus:'completed'}});page.flush();assert.equal(card.testShadow.querySelector('.answer').textContent,'Paid retry crossed cancellation.');assert.equal(retryLabel(card).hidden,true);assert.equal(retryLabel(card,true).hidden,true);assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,1);
   }
 });
@@ -4034,4 +4020,130 @@ test('native adapter fault on a new card asks for extension update',()=>{
  const page=fixture({postCount:1});nativeFaultConfig(page,{ready:false,code:'X_NATIVE_ADAPTER_CHANGED',cacheReady:false});page.intersect();page.tick();
  assert.equal(analyzeMessages(page).length,0);
  assert.ok(page.cards().some(card=>card.testShadow.querySelector('.status').textContent.startsWith(ui.t('native.adapterChanged','zh-CN'))),JSON.stringify({statuses:page.cards().map(card=>card.testShadow.querySelector('.status').textContent),expected:ui.t('native.adapterChanged','zh-CN')}));
+});
+
+for(const phase of ['retry-wait','queued-after-start'])for(const mode of ['scroll','unmount','narrow-rail'])test(`started visible analysis survives ${mode} during ${phase}`,()=>{
+ const page=fixture({postCount:1});page.configure({prefetchCount:0});page.intersect();page.tick();
+ const request=analyzeMessages(page)[0];assert.ok(request);assert.equal(request.prefetch,false);
+ page.port.onMessage.emit({type:'START',requestId:request.requestId});
+ retryWait(page,request);
+ if(phase==='queued-after-start')page.port.onMessage.emit({type:'QUEUED',requestId:request.requestId,retryAttempt:1});
+ const offset=page.port.sent.length;
+ if(mode==='scroll')page.scroll(2000);
+ if(mode==='unmount'){page.articles[0].remove();page.mutate();}
+ if(mode==='narrow-rail')page.resize(700);
+ page.tick();
+ const cancellations=page.port.sent.slice(offset).filter(m=>m.requestId===request.requestId&&m.type.startsWith('CANCEL'));
+ assert.ok(cancellations.every(m=>m.type==='CANCEL_IF_QUEUED'&&m.preserveStarted),JSON.stringify(cancellations));
+ if(mode==='scroll')page.scroll(-2000);
+ if(mode==='unmount'){page.primary.append(page.articles[0]);page.mutate();}
+ if(mode==='narrow-rail')page.resize(1440);
+ completeFeedRequest(page,request,'Completed original visible work');page.intersect();page.tick();
+ assert.ok(page.nodes.some(n=>n.textContent.includes('Completed original visible work')));
+ assert.equal(analyzeMessages(page).length,1);
+});
+
+for(const prefetch of [{prefetchCount:5},{prefetchAll:true}])test('post detail automatically analyzes only selected post with '+JSON.stringify(prefetch),()=>{
+ const page=fixture({postCount:12});page.location.pathname='/test/status/100';page.location.href='https://x.com/test/status/100';
+ page.configure(prefetch);page.intersect();page.tick();
+ assert.deepEqual(analyzeMessages(page).map(m=>m.post.id),['100']);
+ page.scroll(1200);page.tick(5000);assert.deepEqual(analyzeMessages(page).map(m=>m.post.id),['100']);
+ assert.equal(page.cards()[1].testShadow.querySelector('.status').textContent,ui.t('status.replyManual','zh-CN'));
+ assert.equal(page.cards()[1].testShadow.querySelector('.retry').textContent,ui.t('common.analyzeReply','zh-CN'));
+});
+test('reply analysis is an explicit cached-first click and is not withdrawn on scroll',()=>{
+ const page=fixture({postCount:3});page.location.pathname='/test/status/100';page.location.href='https://x.com/test/status/100';page.configure();page.intersect();page.tick();
+ const button=page.cards()[1].testShadow.querySelector('.retry');assert.equal(button.hidden,false);button.emit('click');page.flush();
+ const request=analyzeMessages(page).find(m=>m.post.id==='101');assert.ok(request);assert.equal(request.force,false);
+ button.emit('click');page.flush();assert.equal(analyzeMessages(page).filter(m=>m.post.id==='101').length,1);
+ const offset=page.port.sent.length;page.scroll(2000);page.tick();assert.equal(page.port.sent.slice(offset).some(m=>m.requestId===request.requestId&&m.type.startsWith('CANCEL')),false);
+ completeFeedRequest(page,request,'Explicit reply finished');assert.ok(page.nodes.some(n=>n.textContent.includes('Explicit reply finished')));
+});
+test('saved reply answers remain readable without an automatic reply request',()=>{
+ const page=fixture({postCount:3,cacheLookup:p=>p.id==='101'?savedFinding():null});page.location.pathname='/test/status/100';page.location.href='https://x.com/test/status/100';page.configure();page.intersect();page.tick();
+ assert.deepEqual(analyzeMessages(page).map(m=>m.post.id),['100']);
+ assert.ok(page.cards()[1].testShadow.querySelector('.answer').textContent.includes('Previously checked with evidence.'));
+});
+test('reply manual action waits for a pending cache lookup instead of bypassing it',()=>{
+ const page=fixture({postCount:2,cacheLookup:'hold'});page.location.pathname='/test/status/100';page.location.href='https://x.com/test/status/100';page.configure();page.intersect();page.tick();
+ const lookup=page.port.sent.find(m=>m.type==='LOOKUP_CACHED_POST'&&m.post.id==='101');assert.ok(lookup);
+ page.cards()[1].testShadow.querySelector('.retry').emit('click');page.flush();assert.equal(analyzeMessages(page).length,0);
+ page.port.onMessage.emit({type:'RESULT',requestId:lookup.requestId,cacheLookup:true,cached:true,result:savedFinding()});page.flush();
+ assert.equal(analyzeMessages(page).length,0);assert.ok(page.cards()[1].testShadow.querySelector('.answer').textContent.includes('Previously checked'));
+});
+test('opening a reply as the selected post allows its automatic analysis',()=>{
+ const page=fixture({postCount:3});page.location.pathname='/test/status/101';page.location.href='https://x.com/test/status/101';page.configure();page.intersect();page.tick();
+ assert.deepEqual(analyzeMessages(page).map(m=>m.post.id),['101']);
+});
+test('first manual reply analysis wakes an idle worker without forcing a fresh result',()=>{
+ const page=fixture({postCount:2});page.location.pathname='/test/status/100';page.location.href='https://x.com/test/status/100';page.configure();page.intersect();page.tick();
+ const main=analyzeMessages(page)[0];completeFeedRequest(page,main,'Main result');
+ const old=page.port;old.onDisconnect.emit();page.flush();page.replacePort();
+ const button=page.cards()[1].testShadow.querySelector('.retry');button.emit('click');button.emit('click');page.flush();
+ assert.equal(page.connectionAttempts(),2);assert.equal(analyzeMessages(page).length,0);
+ page.configure();page.tick();const reply=analyzeMessages(page).find(m=>m.post.id==='101');assert.ok(reply,JSON.stringify({sent:page.port.sent,statuses:page.cards().map(card=>card.testShadow.querySelector('.status').textContent)}));assert.equal(reply.force,false);
+ assert.equal(analyzeMessages(page).filter(m=>m.post.id==='101').length,1);
+});
+
+function nativeSearchFixture(page){
+ const form=page.document.createElement('form'),input=page.document.createElement('input');form.setAttribute('role','search');input.setAttribute('data-testid','SearchBox_Search_Input');
+ form.rect={left:900,right:1250,top:6,bottom:50,width:350,height:44};input.rect={...form.rect};form.original=input.original=true;form.append(input);page.sidebar.prepend(form);page.clearWrites();return {form,input};
+}
+test('native search keeps its space above the compact toolbar and language stays in settings',()=>{
+ const page=fixture();const {form}=nativeSearchFixture(page);page.configure({language:'zh-CN'});page.intersect();page.tick();
+ const header=page.nodes.find(n=>n.className==='rail-head'),rail=page.nodes.find(n=>n.className==='rail');
+ assert.equal(header.style.top,'58px');assert.equal(header.style.height,'40px');assert.equal(header.style.left,'900px');assert.equal(header.style.width,'350px');
+ assert.equal(rail.style.top,'58px');assert.equal(rail.style.height,'902px');assert.equal(page.nodes.some(n=>n.className==='rail-language'),false);
+ assert.equal(form.rect.top,6);assert.ok(page.cards()[0].getBoundingClientRect().top+parseFloat(page.cards()[0].testShadow.querySelector('.card').style.top)>=98);assert.deepEqual(page.writes,[]);
+});
+test('focused native search reveals suggestions without cancelling an accepted analysis and blur restores it',()=>{
+ const page=fixture({postCount:1});const {form,input}=nativeSearchFixture(page);page.configure();page.intersect();page.tick();const request=analyzeMessages(page)[0];assert.ok(request);page.port.onMessage.emit({type:'START',requestId:request.requestId});
+ const offset=page.port.sent.length;page.document.activeElement=input;page.document.emit('focusin',{target:input});page.flush();page.tick();
+ const overlay=page.nodes.find(n=>n.tagName==='GROK-FIRST-OVERLAY');assert.equal(overlay.hidden,true);assert.equal(form.isConnected,true);
+ assert.equal(page.port.sent.slice(offset).some(m=>m.type.startsWith('CANCEL')),false);
+ completeFeedRequest(page,request,'Finished while searching');assert.equal(overlay.hidden,true);
+ page.document.activeElement=page.document.body;page.document.emit('focusout',{target:input});page.flush();page.tick();assert.equal(overlay.hidden,false);
+ assert.ok(page.nodes.some(n=>n.textContent.includes('Finished while searching')));assert.equal(analyzeMessages(page).length,1);assert.deepEqual(page.writes,[]);
+});
+test('native search resize and offscreen recovery update toolbar placement without changing posts',()=>{
+ const page=fixture({postCount:1});const {form}=nativeSearchFixture(page);page.configure();page.intersect();
+ const header=page.nodes.find(n=>n.className==='rail-head');form.rect={...form.rect,bottom:68,height:62};
+ for(const observer of page.resizeObservers)observer.callback([]);page.flush();assert.equal(header.style.top,'76px');
+ form.rect={...form.rect,top:-68,bottom:0};page.window.emit('scroll');page.flush();assert.equal(header.style.top,'0px');
+ form.rect={...form.rect,top:6,bottom:50,height:44};page.window.emit('scroll');page.flush();assert.equal(header.style.top,'58px');assert.deepEqual(page.writes,[]);
+});
+
+function resizeEvent(extra={}){return {button:0,pointerId:3,clientX:1250,preventDefault(){},stopPropagation(){},...extra};}
+test('dragging the analysis edge resizes without changing posts or analyses and saves only on release',()=>{
+ const page=fixture({postCount:1});const {form}=nativeSearchFixture(page);page.configure();page.intersect();page.tick();const request=analyzeMessages(page)[0];page.port.onMessage.emit({type:'START',requestId:request.requestId});
+ const handle=page.nodes.find(n=>n.className==='rail-resize'),rail=page.nodes.find(n=>n.className==='rail'),before=page.port.sent.length;
+ handle.emit('pointerdown',resizeEvent());assert.equal(handle.hasPointerCapture(3),true);handle.emit('pointermove',resizeEvent({clientX:1400}));page.flush();
+ assert.equal(rail.style.width,'500px');assert.equal(page.port.sent.slice(before).some(m=>m.type==='SET_RAIL_WIDTH'),false);assert.equal(form.rect.width,350);
+ handle.emit('pointerup',resizeEvent({clientX:1400}));page.flush();assert.equal(handle.hasPointerCapture(3),false);
+ assert.deepEqual(page.port.sent.slice(before).filter(m=>m.type==='SET_RAIL_WIDTH').map(m=>m.width),[500]);
+ assert.equal(page.port.sent.slice(before).some(m=>m.type.startsWith('CANCEL')||m.type==='ANALYZE'||m.type==='SAVE_SETTINGS'),false);
+ completeFeedRequest(page,request,'Original generation survives resizing');assert.ok(page.nodes.some(n=>n.textContent.includes('Original generation survives resizing')));assert.deepEqual(page.writes,[]);
+});
+for(const cancel of ['pointercancel','Escape','blur','handle-blur'])test('unfinished width drag cancels on '+cancel+' without storing it',()=>{
+ const page=fixture({postCount:1});page.configure();const handle=page.nodes.find(n=>n.className==='rail-resize'),rail=page.nodes.find(n=>n.className==='rail');const offset=page.port.sent.length;
+ handle.emit('pointerdown',resizeEvent());handle.emit('pointermove',resizeEvent({clientX:1380}));page.flush();assert.equal(rail.style.width,'480px');
+ if(cancel==='Escape'){assert.equal(page.document.activeElement,handle);page.document.activeElement.emit('keydown',resizeEvent({key:'Escape'}));}else if(cancel==='blur')page.window.emit('blur');else if(cancel==='handle-blur')handle.emit('blur');else handle.emit('pointercancel',resizeEvent());page.flush();
+ assert.equal(rail.style.width,'350px');assert.equal(handle.hasPointerCapture(3),false);assert.equal(page.port.sent.slice(offset).some(m=>m.type==='SET_RAIL_WIDTH'),false);
+});
+test('width keyboard controls, double click and remote preference synchronize without restarting work',()=>{
+ const page=fixture({postCount:1});page.configure();const handle=page.nodes.find(n=>n.className==='rail-resize'),rail=page.nodes.find(n=>n.className==='rail');const count=analyzeMessages(page).length;
+ handle.emit('keydown',resizeEvent({key:'ArrowRight'}));page.flush();assert.equal(rail.style.width,'366px');
+ page.port.onMessage.emit({type:'RAIL_WIDTH',width:500});page.flush();assert.equal(rail.style.width,'500px');
+ page.resize(1200);assert.equal(rail.style.width,'300px');page.resize(1440);assert.equal(rail.style.width,'500px');
+ handle.emit('dblclick');page.flush();assert.equal(rail.style.width,'350px');assert.equal(page.port.sent.findLast(m=>m.type==='SET_RAIL_WIDTH').width,0);
+ assert.equal(handle.getAttribute('role'),'separator');assert.equal(handle.getAttribute('aria-valuenow'),'350');assert.equal(analyzeMessages(page).length,count);
+});
+test('clicking the resize edge without a width change keeps automatic sizing and writes nothing',()=>{
+ const page=fixture();page.configure();const handle=page.nodes.find(n=>n.className==='rail-resize'),offset=page.port.sent.length;
+ handle.emit('pointerdown',resizeEvent());handle.emit('pointermove',resizeEvent());handle.emit('pointerup',resizeEvent());page.flush();assert.equal(page.port.sent.slice(offset).some(m=>m.type==='SET_RAIL_WIDTH'),false);
+});
+test('resizing with an idle worker keeps the chosen width across wake CONFIG and sends no analysis',()=>{
+ const {page,request,card}=tokenFixture();tokenResult(page,request,{usage:{total_tokens:30},model:'retained'});page.port.onDisconnect.emit();page.flush();page.replacePort();
+ const handle=page.nodes.find(n=>n.className==='rail-resize'),rail=page.nodes.find(n=>n.className==='rail');handle.emit('keydown',resizeEvent({key:'ArrowRight'}));page.flush();assert.equal(rail.style.width,'366px');assert.equal(page.port.sent.some(m=>m.type==='SET_RAIL_WIDTH'),false);
+ page.configure();page.flush();assert.equal(rail.style.width,'366px');assert.deepEqual(page.port.sent.filter(m=>m.type==='SET_RAIL_WIDTH').map(m=>m.width),[366]);assert.equal(analyzeMessages(page).length,0);assert.equal(card.testShadow.querySelector('.answer').textContent,'A completed explanation.');
 });

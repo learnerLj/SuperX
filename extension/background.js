@@ -13,9 +13,13 @@ let answerClearBarrier=Promise.resolve();
 const history = SuperXHistoryStore.create(chrome.storage.local);
 const HISTORY_ALARM = 'SUPERX_HISTORY_CLEANUP';
 const clients = new Set();
+let clientSequence=0;
 const jobs = new Map();
+// One owner spans cache admission, queue, retry and transport settlement.
+const flights = new Map(), subscriptions = new Map();
 const runningJobs = new Set();
 const apiSlots = new Set();
+let railWidth=0,railWidthWrites=Promise.resolve();
 let queue = [], pumping = false, settings, cache = {}, quotas = {}, railStates = {}, revision = 0, cacheEpoch = 0;
 let uiLanguage = UI.browserLanguage(globalThis);
 let apiDiagnostics = [], apiDiagnosticsEpoch = 0, apiDiagnosticsReady = Promise.resolve(), apiDiagnosticsWrites = Promise.resolve();
@@ -37,8 +41,9 @@ async function initialize() {
   // Diagnostic storage is optional. Its reads/writes never gate credentials,
   // analysis or normal extension startup.
   apiDiagnosticsReady=loadAPIDiagnostics();
-  const local = await chrome.storage.local.get(['settings','uiLanguage','apiKey','apiKeyEncrypted','apiKeyVault','rememberApiKey','buildConnectionEncrypted','invalidAnswerSource']);
+  const local = await chrome.storage.local.get(['settings','uiLanguage','apiKey','apiKeyEncrypted','apiKeyVault','rememberApiKey','buildConnectionEncrypted','invalidAnswerSource','railWidth']);
   const session = await chrome.storage.session.get(['quotas','railStates','uiLanguage','apiKey','cache','securityFault','apiBudgetPause','apiCapacityPause']);
+  railWidth=validRailWidth(local.railWidth)?local.railWidth:0;
   const hasSettings=local.settings&&typeof local.settings==='object'&&!Array.isArray(local.settings)&&Object.keys(local.settings).length>0;
   const legacyConnection=KeyStore.envelopePresent(local.apiKeyEncrypted)||validKey(local.apiKey)||local.apiKeyVault!==undefined||validKey(session.apiKey)||BuildKeyStore.envelopePresent(local.buildConnectionEncrypted);
   settings = Core.normalizeSettings(!hasSettings&&legacyConnection?{provider:'api'}:local.settings);
@@ -245,7 +250,7 @@ function collapsedRailWorkAllowed(job) { return draftJob(job)||postJob(job)&&(jo
 function currentTaskAllowed(job) { return !postJob(job)||job.started||job.force||settings.enabled; }
 function removePausedAutomaticJobs() {
   for(const job of [...jobs.values()])if(!currentTaskAllowed(job)){
-    abortJob(job,true);jobError(job,'已暂停自动分析。','PAUSED');
+    jobError(job,'已暂停自动分析。','PAUSED');abortJob(job,true);
   }
   queue=queue.filter(job=>jobs.get(job.key)===job);
 }
@@ -253,6 +258,7 @@ function paidTaskSettings(value={}) {
   const {explainPrompt,verifyPrompt,draftPrompt,postDraftPrompt,replyDraftPrompt,commentsPrompt,interfaceLanguage,dwellMs,analysisDefaultsVersion,oauthRemember,enabled,answerCacheLimitMB,prefetchCount,prefetchAll,...other}=value;
   return other;
 }
+function validRailWidth(value){return value===0||Number.isSafeInteger(value)&&value>=220;}
 function send(port, message) { try { port.postMessage(message); } catch { /* Tab closed. */ } }
 async function publicConfig() {
   const generation=securityGeneration,canRefresh=securityPending===0;
@@ -263,7 +269,7 @@ async function publicConfig() {
   const status=securityStatus();
   const historyConfig=history.config();
   if(settings.provider==='build')ensureBuildStatus();
-  return {settings,answerCacheReady,nativeStatus:{errorCode:nativeFaultCode},taskRevision:revision,ready:providerAllowsCalls(),keyState:status.keyState,credentialIdentity:settings.provider==='oauth'?oauthCredentialIdentity:'',oauthStatus:oauthFeedStatus(),apiBudgetPaused:false,apiCapacityPaused:false,...(settings.provider==='build'?{buildStatus:{...buildStatus,ready:buildReady()}}:{}),buildConnection:{configured:validBuildSecret(buildSecret),port:settings.buildPort},historyEnabled:historyConfig.enabled,historyEpoch:historyConfig.epoch};
+  return {settings,railWidth,answerCacheReady,nativeStatus:{errorCode:nativeFaultCode},taskRevision:revision,ready:providerAllowsCalls(),keyState:status.keyState,credentialIdentity:settings.provider==='oauth'?oauthCredentialIdentity:'',oauthStatus:oauthFeedStatus(),apiBudgetPaused:false,apiCapacityPaused:false,...(settings.provider==='build'?{buildStatus:{...buildStatus,ready:buildReady()}}:{}),buildConnection:{configured:validBuildSecret(buildSecret),port:settings.buildPort},historyEnabled:historyConfig.enabled,historyEpoch:historyConfig.epoch};
 }
 async function notifyHistoryChanged(){await chrome.runtime.sendMessage({type:'HISTORY_CHANGED',...history.config()}).catch(()=>{});}
 async function broadcastHistoryConfig(){
@@ -524,7 +530,7 @@ function withBillingMetadata(value,provider,verificationMode) {
   for(const field of ['usage','usageComplete','usageByStage','model','modelByStage','verificationStart','verificationFailure','requestDiagnostics'])delete result[field];
   return {...result,...billingMetadata(value,provider),...verificationMetadata(value,verificationMode),...requestMetadata(value,provider)};
 }
-function jobError(job,error,code,extra={}) { send(job.client.port,{type:commentsJob(job)?'COMMENT_ERROR':'ERROR',requestId:job.requestId,error,code,retryAttempts:job.retryAttempts||0,...extra}); }
+function jobError(job,error,code,extra={}) { sendJob(job,{type:commentsJob(job)?'COMMENT_ERROR':'ERROR',requestId:job.requestId,error,code,retryAttempts:job.retryAttempts||0,...extra}); }
 function freshCacheEntry(entry,now) {
   return entry&&typeof entry==='object'&&!Array.isArray(entry)&&entry.provider!=='x-native'&&Number.isFinite(entry.completedAt)&&entry.completedAt>=0&&entry.completedAt<=now&&now-entry.completedAt<CACHE_TTL
     &&(typeof entry.text!=='string'||Core.readerOutput(entry.text,{final:true}).kind==='content');
@@ -564,7 +570,7 @@ function nativeJobCurrent(job){return job.settings.provider!=='x-native'||job.na
 function saveAnswer(job,result,epoch){
   if(!job.fingerprint||!cacheableAnswer(result))return;
   const pending=queueAnswerWrite(()=>{
-    if(epoch!==cacheEpoch||job.controller.signal.aborted||!nativeJobCurrent(job)||!clients.has(job.client))return;
+    if(epoch!==cacheEpoch||job.controller.signal.aborted||!nativeJobCurrent(job)||!jobAudienceActive(job))return;
     return answers.put(job.fingerprint,result,answerBudget());
   });
   answerPending.set(job.fingerprint,pending);
@@ -582,9 +588,76 @@ function persistRailStates() {
   railStateWrites=railStateWrites.catch(()=>{}).then(()=>chrome.storage.session.set({railStates:{...railStates}}));
   return railStateWrites;
 }
-function removeJob(job) { if(jobs.get(job.key)===job)jobs.delete(job.key); }
-function abortJob(job,deferPump=false) { job.cancelled=true;clearTimeout(job.retryTimer);job.retryTimer=undefined;job.retryPlan=undefined;job.controller.abort(); removeJob(job); queue = queue.filter(j=>j!==job);if(!deferPump)pump(); }
-function cancelClient(client) { client.cancelEpoch++;client.admissions.clear();client.promotions.clear(); for (const job of [...jobs.values()]) if(job.client===client) abortJob(job); }
+function jobAudienceActive(job) {
+  return job.subscribers?job.subscribers.size>0:clients.has(job.client)&&job.clientEpoch===job.client.cancelEpoch;
+}
+function sendCancelledSubscribers(job,message) {
+  for(const sub of job.cancelledSubscribers||[]){
+    // A reused request ID belongs to its new admission, not the old cleanup.
+    if(!subscriptions.has(sub.key)&&!sub.client.admissions.has(sub.requestId))send(sub.client.port,{...message,requestId:sub.requestId});
+  }
+  job.cancelledSubscribers=undefined;
+}
+function sendJob(job,message) {
+  if(!job.subscribers){send(job.client.port,message);return;}
+  if(['QUEUED','START','RETRY_WAIT'].includes(message.type)){
+    job.statusMessage=message;
+  }
+  if(message.type==='UPDATE')job.updateMessage={...job.updateMessage,...Object.fromEntries(Object.entries(message).filter(([,value])=>value!==undefined))};
+  if(['RESULT','ERROR'].includes(message.type))job.terminal=true;
+  for(const sub of job.subscribers.values())send(sub.client.port,{...message,requestId:sub.requestId});
+  if(message.type==='ERROR')sendCancelledSubscribers(job,message);
+}
+function subscribeJob(job,sub) {
+  job.subscribers.set(sub.key,sub);subscriptions.set(sub.key,{job,sub});
+  if(sub.force)job.force=true;
+  if(!sub.prefetch&&job.prefetch){job.prefetch=false;if(queue.includes(job)){queue=queue.filter(value=>value!==job);enqueueJob(job);}}
+  if(job.cancelled||job.restartAfterSettle){send(sub.client.port,{type:'QUEUED',requestId:sub.requestId});return;}
+  if(job.statusMessage)send(sub.client.port,{...job.statusMessage,requestId:sub.requestId});
+  if(job.updateMessage)send(sub.client.port,{...job.updateMessage,requestId:sub.requestId});
+}
+function requestJob(client,id){return subscriptions.get(`${client.tabId}:${id}`)?.job||jobs.get(`${client.tabId}:${id}`);}
+function requestOwned(job,client,id){return job?.subscribers?job.subscribers.get(`${client.tabId}:${id}`)?.client===client:job?.client===client;}
+function removeJob(job) {
+  if(jobs.get(job.key)===job)jobs.delete(job.key);
+  if(job.flightKey&&flights.get(job.flightKey)===job)flights.delete(job.flightKey);
+  for(const sub of job.subscribers?.values()||[])if(subscriptions.get(sub.key)?.job===job)subscriptions.delete(sub.key);
+}
+function abortJob(job,deferPump=false) {
+  if(job.subscribers?.size&&!job.terminal)jobError(job,'任务已取消。','CANCELLED');
+  job.cancelled=true;clearTimeout(job.retryTimer);job.retryTimer=undefined;job.retryPlan=undefined;job.controller.abort();
+  if(job.subscribers){
+    for(const sub of job.subscribers.values())if(subscriptions.get(sub.key)?.job===job)subscriptions.delete(sub.key);
+    job.subscribers.clear();
+  }
+  // Cancellation is not transport settlement. Keep the semantic lock and slot.
+  if(!runningJobs.has(job)&&!job.apiProviderPending)removeJob(job);
+  queue=queue.filter(j=>j!==job);if(!deferPump)pump();
+}
+function cancelSubscription(job,client,id,error={}) {
+  if(!job.subscribers){abortJob(job);return;}
+  const key=`${client.tabId}:${id}`,sub=job.subscribers.get(key);
+  if(sub?.client!==client)return;
+  if(job.settings.provider==='x-native'&&runningJobs.has(job)&&job.subscribers.size===1){(job.cancelledSubscribers||=[]).push(sub);}
+  else send(client.port,{type:'ERROR',requestId:sub.requestId,error:'任务已取消。',code:'CANCELLED',retryAttempts:job.retryAttempts||0,...aggregateBilling(job,job.billing),...error});
+  job.subscribers.delete(key);if(subscriptions.get(key)?.job===job)subscriptions.delete(key);
+  if(!job.subscribers.size)abortJob(job);
+}
+function replaceNativeOwner(job) {
+  if(runningJobs.has(job)){job.restartAfterSettle=true;job.controller.abort();return;}
+  const sub=job.subscribers.values().next().value;
+  job.client=sub.client;job.clientEpoch=sub.client.cancelEpoch;job.nativeGeneration=sub.client.nativeGeneration;
+}
+function cancelClient(client) {
+  client.cancelEpoch++;client.admissions.clear();client.promotions.clear();
+  for(const job of [...jobs.values()]){
+    if(!job.subscribers){if(job.client===client)abortJob(job);continue;}
+    for(const sub of [...job.subscribers.values()])if(sub.client===client)cancelSubscription(job,client,sub.requestId);
+    if(job.settings.provider==='x-native'&&job.client===client&&(!clients.has(client)||!nativeJobCurrent(job))&&job.subscribers.size){
+      replaceNativeOwner(job);
+    }
+  }
+}
 // Browser message promises do not reject when an AbortSignal is cancelled.
 // Keep the UI await interruptible; paid calls retain their separate slot until
 // the actual provider promise (including transport cleanup) has settled.
@@ -611,7 +684,7 @@ async function openSettings(focus) {
 async function openHistory(){await chrome.tabs.create({url:chrome.runtime.getURL('history.html')});}
 chrome.runtime.onConnect.addListener(port => {
   if (port.name !== 'GROKFIRST_FEED' || !port.sender || !trustedFeed(port.sender)) { port.disconnect(); return; }
-  const client = {port,tabId:port.sender.tab.id,cancelEpoch:0,uiLanguage:null,requestCancellations:new Map(),admissions:new Map(),promotions:new Set(),nativeAccount:'',nativeGeneration:0}; clients.add(client);
+  const client = {scope:++clientSequence,port,tabId:port.sender.tab.id,cancelEpoch:0,uiLanguage:null,requestCancellations:new Map(),admissions:new Map(),promotions:new Set(),nativeAccount:'',nativeGeneration:0}; clients.add(client);
   ready.then(async()=>{client.uiLanguage=UI.normalizeLanguage(client.uiLanguage || uiLanguage);send(port,{type:'CONFIG',...await publicConfig(),used:quotas[client.tabId] || 0,collapsed:Boolean(railStates[client.tabId]),uiLanguage:client.uiLanguage});}).catch(()=>send(port,{type:'FATAL',error:'扩展初始化失败，请重新加载扩展。'}));
   port.onMessage.addListener(message=>{
     if(message?.type==='NATIVE_EVENT')return;
@@ -619,7 +692,11 @@ chrome.runtime.onConnect.addListener(port => {
       const account=Core.normalizeNativeAccount(message.nativeAccount);
       if(account!==client.nativeAccount){
         client.nativeAccount=account;client.nativeGeneration++;
-        for(const job of [...jobs.values()].filter(job=>job.client===client&&job.settings.provider==='x-native'))abortJob(job);
+        for(const job of [...jobs.values()].filter(job=>job.settings.provider==='x-native')){
+          if(!job.subscribers){if(job.client===client)abortJob(job);continue;}
+          for(const sub of [...job.subscribers.values()])if(sub.client===client)cancelSubscription(job,client,sub.requestId);
+          if(job.client===client&&job.subscribers?.size)replaceNativeOwner(job);
+        }
       }
       if(message.type==='NATIVE_ACCOUNT_CHANGED')return;
     }
@@ -632,17 +709,17 @@ chrome.runtime.onConnect.addListener(port => {
     if(['CANCEL','CANCEL_IF_QUEUED'].includes(message.type)&&messageRequestId){client.requestCancellations.set(messageRequestId,Symbol());client.admissions.delete(messageRequestId);client.promotions.delete(messageRequestId);}
     if(message.type==='PROMOTE_REQUEST'){
       if(client.admissions.has(messageRequestId))client.promotions.add(messageRequestId);
-      const job=jobs.get(`${client.tabId}:${messageRequestId}`);
-      if(job?.client===client&&!commentsJob(job)&&!draftJob(job)&&job.prefetch){
+      const job=requestJob(client,messageRequestId);
+      if(requestOwned(job,client,messageRequestId)&&!commentsJob(job)&&!draftJob(job)&&job.prefetch){
         job.prefetch=false;
         if(queue.includes(job)){queue=queue.filter(value=>value!==job);enqueueJob(job);}
       }
       return;
     }
     const receivedCancellation=client.requestCancellations.get(messageRequestId);
-    let admission;
+    let admission,admittedJob;
     if(['ANALYZE','ANALYZE_DRAFT','GENERATE_COMMENTS'].includes(message.type)&&messageRequestId){
-      if(client.admissions.has(messageRequestId)||jobs.get(`${client.tabId}:${messageRequestId}`)?.cancellation===receivedCancellation&&jobs.has(`${client.tabId}:${messageRequestId}`))return;
+      if(client.admissions.has(messageRequestId)||requestJob(client,messageRequestId)?.cancellation===receivedCancellation&&Boolean(requestJob(client,messageRequestId)))return;
       admission=Symbol();client.admissions.set(messageRequestId,admission);
     }
     ready.then(async()=>{
@@ -653,7 +730,7 @@ chrome.runtime.onConnect.addListener(port => {
         if(!messageRequestId)return;
         const miss=deferred=>send(port,{type:'CACHE_MISS',requestId:messageRequestId,...(deferred?{deferred:true}:{})});
         const currentCredentials=()=>settings.provider==='x-native'?receivedNativeGeneration===client.nativeGeneration:settings.provider==='oauth'?receivedOAuthGeneration===oauthGeneration:settings.provider==='build'?receivedBuildGeneration===buildConnectionGeneration:receivedCredentialGeneration===securityGeneration;
-        const current=()=>clients.has(client)&&trustedFeed(port.sender)&&!jobs.has(`${client.tabId}:${messageRequestId}`)&&client.cancelEpoch===receivedEpoch&&receivedRevision===revision&&receivedCacheEpoch===cacheEpoch&&client.requestCancellations.get(messageRequestId)===receivedCancellation&&currentCredentials()&&!providerFault;
+        const current=()=>clients.has(client)&&trustedFeed(port.sender)&&!Boolean(requestJob(client,messageRequestId))&&client.cancelEpoch===receivedEpoch&&receivedRevision===revision&&receivedCacheEpoch===cacheEpoch&&client.requestCancellations.get(messageRequestId)===receivedCancellation&&currentCredentials()&&!providerFault;
         if(!current()){miss(false);return;}
         if(settings.provider==='api'&&(securityPending||securityFault)||settings.provider==='build'&&buildConnectionPending){miss(true);return;}
         const oauthState=settings.provider==='oauth'?oauth.status():null;
@@ -682,24 +759,34 @@ chrome.runtime.onConnect.addListener(port => {
       }
       if(message.type==='SET_ENABLED') { await queueSettingsMutation(()=>({...settings,enabled:Boolean(message.enabled)})); return; }
       if(message.type==='SET_LANGUAGE') { await queueSettingsMutation(()=>({...settings,language:message.language})); return; }
+      if(message.type==='SET_RAIL_WIDTH'){
+        if(!trustedFeed(port.sender)||!validRailWidth(message.width))return;
+        const width=message.width;railWidth=width;
+        for(const peer of clients)send(peer.port,{type:'RAIL_WIDTH',width});
+        railWidthWrites=railWidthWrites.catch(()=>{}).then(()=>chrome.storage.local.set({railWidth:width}));
+        await railWidthWrites;return;
+      }
       if(message.type==='SET_RAIL_COLLAPSED') {
         railStates[client.tabId]=Boolean(message.collapsed);
         if(railStates[client.tabId]) {
-          for(const waiting of [...jobs.values()].filter(job=>job.client.tabId===client.tabId&&!collapsedRailWorkAllowed(job)&&!runningJobs.has(job))) {
-            abortJob(waiting,true);jobError(waiting,'右栏已收起，未开始的分析已暂停。','RAIL_COLLAPSED');
+          for(const waiting of [...jobs.values()].filter(job=>!collapsedRailWorkAllowed(job)&&!runningJobs.has(job))) {
+            if(waiting.subscribers){
+              for(const sub of [...waiting.subscribers.values()])if(sub.client.tabId===client.tabId)cancelSubscription(waiting,sub.client,sub.requestId,{error:'右栏已收起，未开始的分析已暂停。',code:'RAIL_COLLAPSED'});
+            }else if(waiting.client.tabId===client.tabId){jobError(waiting,'右栏已收起，未开始的分析已暂停。','RAIL_COLLAPSED');abortJob(waiting,true);}
           }
           queue=queue.filter(job=>jobs.get(job.key)===job);pump();
         }
         for(const peer of clients)if(peer.tabId===client.tabId)send(peer.port,{type:'RAIL_VISIBILITY',collapsed:Boolean(railStates[client.tabId])});
         await persistRailStates();return;
       }
-      if(message.type==='CANCEL') { const job=jobs.get(`${client.tabId}:${message.requestId}`); if(job?.client===client) abortJob(job); return; }
+      if(message.type==='CANCEL') { const job=requestJob(client,messageRequestId); if(requestOwned(job,client,messageRequestId))cancelSubscription(job,client,messageRequestId); return; }
       if(message.type==='CANCEL_IF_QUEUED') {
-        const job=jobs.get(`${client.tabId}:${messageRequestId}`);
+        const job=requestJob(client,messageRequestId);
         // Hiding a tab may race START or a retry's transition back to waiting.
         // Keep the logical job once any attempt has owned a provider slot.
-        if(job?.client===client && (runningJobs.has(job)||message.preserveStarted===true&&job.started===true))return;
-        if(job?.client===client)abortJob(job);
+        if(requestOwned(job,client,messageRequestId) && (runningJobs.has(job)||message.preserveStarted===true&&job.started===true))return;
+        if(requestOwned(job,client,messageRequestId)&&job.subscribers){cancelSubscription(job,client,messageRequestId);return;}
+        if(requestOwned(job,client,messageRequestId))abortJob(job);
         send(port,{type:'ERROR',requestId:messageRequestId,error:'未开始的分析已暂停。',code:'CANCELLED'});return;
       }
       if(!['ANALYZE','ANALYZE_DRAFT','GENERATE_COMMENTS'].includes(message.type)) return;
@@ -730,26 +817,40 @@ chrome.runtime.onConnect.addListener(port => {
         if(receivedCacheEpoch!==cacheEpoch){report('缓存已清空，任务已取消；请重新核查。','CANCELLED');return false;}
         return true;
       };
-      const cached=draft||message.force===true?null:comments?cachedResult(fingerprint):await cachedAnswer(fingerprint);
-      if(!resumeAdmission())return;
-      if(cached) { rememberHistoryResult(ticket,cached,comments,historyLanguage);send(port,comments?{type:'COMMENT_RESULT',requestId,comments:cached.comments,cached:true,...billingMetadata(cached,snapshot.provider)}:{type:'RESULT',requestId,result:withBillingMetadata(cached,snapshot.provider,snapshot.apiVerification),cached:true}); return; }
-      const config=await publicConfig();
-      if(!resumeAdmission())return;
-      if(!settings.enabled&&!comments&&!draft&&message.force!==true){report('已暂停自动分析。','PAUSED');return;}
-      if(railStates[client.tabId]&&!draft){report('右栏已收起。','RAIL_COLLAPSED');return;}
-      if(!config.ready) {
-        if(settings.provider==='x-native'){const error=SuperXNative.publicError({code:nativeFaultCode||'X_NATIVE_INTERRUPTED'});report(error.error,error.code);}
-        else if(settings.provider==='oauth')report('请在设置中连接 Grok 订阅并选择可用模型。',oauth.status().errorCode||(!oauth.status().connected?'OAUTH_LOGIN_REQUIRED':'OAUTH_MODEL_UNAVAILABLE'));
-        else report(settings.provider==='build'?'请在设置中连接 Grok Build。':'请打开设置并输入 xAI API Key。',settings.provider==='build'?(buildStatus.errorCode||'BUILD_NOT_CONNECTED'):'NEEDS_KEY');
-        return;
-      }
       const key=`${client.tabId}:${requestId}`;
-      if(jobs.has(key)) return;
-      const job={key,requestId,force:!comments&&!draft&&message.force===true,prefetch:!comments&&!draft&&message.prefetch===true&&!client.promotions.has(requestId),cancellation:receivedCancellation,cacheEpoch:receivedCacheEpoch,nativeGeneration:receivedNativeGeneration,post,inputFingerprint,analysis,client,clientEpoch:receivedEpoch,settings:snapshot,revision:receivedRevision,fingerprint,historyTicket:ticket,historyLanguage,started:false,retryAttempts:0,completedBilling:[],controller:new AbortController()};
-      jobs.set(key,job);
+      if(requestJob(client,requestId))return;
+      // Unknown native identity can share only within this source connection.
+      const flightFingerprint=fingerprint||(!comments&&!draft?cacheKey(post,{...snapshot,nativeAccount:'unresolved-source:'+client.scope},inputFingerprint):null);
+      const flightKey=!comments&&!draft?JSON.stringify([flightFingerprint,revision,cacheEpoch,securityGeneration,buildConnectionGeneration,oauthGeneration,...(!fingerprint?[client.nativeGeneration]:[])]):null;
+      const sub={key,requestId,client,force:message.force===true,prefetch:message.prefetch===true};
+      const existing=flightKey&&flights.get(flightKey);
+      if(existing){subscribeJob(existing,sub);return;}
+      const job={key:flightKey?Symbol(key):key,requestId,force:!comments&&!draft&&message.force===true,prefetch:!comments&&!draft&&message.prefetch===true&&!client.promotions.has(requestId),cancellation:receivedCancellation,cacheEpoch:receivedCacheEpoch,nativeGeneration:receivedNativeGeneration,post,inputFingerprint,analysis,client,clientEpoch:receivedEpoch,settings:snapshot,revision:receivedRevision,fingerprint,historyTicket:ticket,historyLanguage,started:false,retryAttempts:0,completedBilling:[],controller:new AbortController()};
+      if(flightKey){job.flightKey=flightKey;job.subscribers=new Map();flights.set(flightKey,job);subscribeJob(job,sub);}
+      admittedJob=job;jobs.set(job.key,job);
+      const admissionCurrent=()=>{
+        if(!job.subscribers)return resumeAdmission();
+        if(job.cacheEpoch!==cacheEpoch&&!job.terminal){jobError(job,'缓存已清空，任务已取消；请重新核查。','CANCELLED');}
+        return jobs.get(job.key)===job&&!job.cancelled&&job.revision===revision&&job.cacheEpoch===cacheEpoch&&jobAudienceActive(job);
+      };
+      const cached=draft||message.force===true?null:comments?cachedResult(fingerprint):await cachedAnswer(fingerprint);
+      if(!admissionCurrent()){removeJob(job);return;}
+      if(cached&&!job.force) { rememberHistoryResult(ticket,cached,comments,historyLanguage);sendJob(job,comments?{type:'COMMENT_RESULT',requestId,comments:cached.comments,cached:true,...billingMetadata(cached,snapshot.provider)}:{type:'RESULT',requestId,result:withBillingMetadata(cached,snapshot.provider,snapshot.apiVerification),cached:true});removeJob(job);return; }
+      const config=await publicConfig();
+      if(!admissionCurrent()){removeJob(job);return;}
+      if(!jobRailAllowed(job)&&!draft){jobError(job,'右栏已收起。','RAIL_COLLAPSED');removeJob(job);return;}
+      if(!settings.enabled&&!comments&&!draft&&!job.force){jobError(job,'已暂停自动分析。','PAUSED');removeJob(job);return;}
+      if(!config.ready) {
+        const code=settings.provider==='x-native'?nativeFaultCode||'X_NATIVE_INTERRUPTED':settings.provider==='oauth'?oauth.status().errorCode||'OAUTH_LOGIN_REQUIRED':settings.provider==='build'?buildStatus.errorCode||'BUILD_NOT_CONNECTED':'NEEDS_KEY';
+        jobError(job,providers[snapshot.provider].publicError({code}).error,code);removeJob(job);return;
+      }
       enqueueJob(job);
-      if(!comments)send(port,{type:'QUEUED',requestId});pump();
-    }).catch(()=>send(port,message.type==='LOOKUP_CACHED_POST'?{type:'CACHE_MISS',requestId:messageRequestId}:{type:message.type==='GENERATE_COMMENTS'?'COMMENT_ERROR':'ERROR',requestId:message.requestId,error:'处理失败，请重新加载扩展。'})).finally(()=>{if(admission&&client.admissions.get(messageRequestId)===admission){client.admissions.delete(messageRequestId);client.promotions.delete(messageRequestId);}});
+      if(!comments)sendJob(job,{type:'QUEUED',requestId});pump();
+    }).catch(()=>{
+      const failure=message.type==='LOOKUP_CACHED_POST'?{type:'CACHE_MISS',requestId:messageRequestId}:{type:message.type==='GENERATE_COMMENTS'?'COMMENT_ERROR':'ERROR',requestId:message.requestId,error:'处理失败，请重新加载扩展。'};
+      if(admittedJob){if(jobs.get(admittedJob.key)===admittedJob){sendJob(admittedJob,failure);abortJob(admittedJob);}}
+      else send(port,failure);
+    }).finally(()=>{if(admission&&client.admissions.get(messageRequestId)===admission){client.admissions.delete(messageRequestId);client.promotions.delete(messageRequestId);}});
   });
   port.onDisconnect.addListener(()=>{
     // BFCache and navigation can close a port normally. Chrome requires the
@@ -760,9 +861,10 @@ chrome.runtime.onConnect.addListener(port => {
 });
 
 function liveJob(job) {
-  return nativeJobCurrent(job)&&runningJobs.has(job) && jobs.get(job.key)===job && !job.controller.signal.aborted && job.revision===revision && job.clientEpoch===job.client.cancelEpoch && clients.has(job.client);
+  return nativeJobCurrent(job)&&runningJobs.has(job) && jobs.get(job.key)===job && !job.controller.signal.aborted && job.revision===revision && jobAudienceActive(job);
 }
 function apiLimit(s) { return providers[s.provider].concurrency(s); }
+function jobRailAllowed(job){return collapsedRailWorkAllowed(job)||(job.subscribers?[...job.subscribers.values()].some(sub=>!railStates[sub.client.tabId]):!railStates[job.client.tabId]);}
 function jobPriority(job){return commentsJob(job)||draftJob(job)?0:job.prefetch?2:1;}
 function enqueueJob(job){const at=queue.findIndex(waiting=>jobPriority(waiting)>jobPriority(job));if(at<0)queue.push(job);else queue.splice(at,0,job);}
 const API_BUDGET_CODES=new Set(['spending_limit','insufficient_credits','insufficient_quota','usage_limit_exceeded']);
@@ -806,7 +908,7 @@ function trackedAPICall(job,onUpdate) {
     if(job.executionFinished)completeAttempt(job);
   });
 }
-function logicalJobActive(job){return nativeJobCurrent(job)&&jobs.get(job.key)===job&&!job.cancelled&&job.revision===revision&&job.clientEpoch===job.client.cancelEpoch&&clients.has(job.client);}
+function logicalJobActive(job){return nativeJobCurrent(job)&&jobs.get(job.key)===job&&!job.cancelled&&job.revision===revision&&jobAudienceActive(job);}
 function aggregateBilling(job,current={}){
   if(!job.completedBilling.length)return billingMetadata(current,job.settings.provider);
   const values=[...job.completedBilling,billingMetadata(current,job.settings.provider)];
@@ -829,23 +931,33 @@ function retryPlan(job,error,code,extra={}){
 function completeAttempt(job){
   if(job.attemptCompleted)return;
   job.attemptCompleted=true;releaseAPISlot(job);runningJobs.delete(job);
+  if(job.subscribers?.size&&!job.transportBlocked&&(job.cancelled||job.restartAfterSettle)&&job.revision===revision&&job.cacheEpoch===cacheEpoch){
+    const sub=job.subscribers.values().next().value;
+    job.client=sub.client;job.clientEpoch=sub.client.cancelEpoch;job.nativeGeneration=sub.client.nativeGeneration;
+    job.cancelled=false;job.restartAfterSettle=false;job.terminal=false;job.controller=new AbortController();
+    job.executionFinished=false;job.attemptCompleted=false;job.retryPlan=undefined;job.updateMessage=undefined;
+    if(job.billing)job.completedBilling.push(billingMetadata(job.billing,job.settings.provider));
+    job.billing=undefined;job.requestDiagnostics=undefined;job.diagnosticsRecorded=false;job.attemptHasReaderText=false;
+    job.retainedFactCheck=undefined;job.previousPartial=undefined;
+    sendJob(job,{type:'QUEUED',requestId:job.requestId});enqueueJob(job);pump();return;
+  }
   const plan=job.retryPlan;job.retryPlan=undefined;
-  if(plan&&logicalJobActive(job)&&(!railStates[job.client.tabId]||collapsedRailWorkAllowed(job))){
+  if(plan&&logicalJobActive(job)&&jobRailAllowed(job)){
     const billing=aggregateBilling(job,job.billing);
     job.completedBilling.push(billingMetadata(job.billing,job.settings.provider));
     const next=job.retryAttempts+1;
     const partialResult=plan.extra.partialResult?withBillingMetadata({...plan.extra.partialResult,...billing},job.settings.provider,job.settings.apiVerification):undefined;
-    send(job.client.port,{type:commentsJob(job)?'COMMENT_RETRY_WAIT':'RETRY_WAIT',requestId:job.requestId,
+    sendJob(job,{type:commentsJob(job)?'COMMENT_RETRY_WAIT':'RETRY_WAIT',requestId:job.requestId,
       retryAttempt:next,maxRetries:Core.AUTO_RETRY_LIMIT,retryDelayMs:Core.AUTO_RETRY_DELAY_MS,
       error:plan.error,code:plan.code,...plan.extra,...billing,...(partialResult?{partialResult}:{})});
     job.retryTimer=setTimeout(()=>{
       job.retryTimer=undefined;
-      if(!logicalJobActive(job)||railStates[job.client.tabId]&&!collapsedRailWorkAllowed(job)){removeJob(job);return;}
+      if(!logicalJobActive(job)||!jobRailAllowed(job)){removeJob(job);return;}
       job.previousPartial=job.retainedFactCheck?sanitizeAnalysis(job.retainedFactCheck):undefined;
       job.nextRetryAttempt=next;job.controller=new AbortController();job.executionFinished=false;job.attemptCompleted=false;
       job.billing=undefined;job.requestDiagnostics=undefined;job.diagnosticsRecorded=false;job.attemptHasReaderText=false;
       enqueueJob(job);
-      send(job.client.port,{type:commentsJob(job)?'COMMENT_QUEUED':'QUEUED',requestId:job.requestId,retryAttempt:next,maxRetries:Core.AUTO_RETRY_LIMIT});
+      sendJob(job,{type:commentsJob(job)?'COMMENT_QUEUED':'QUEUED',requestId:job.requestId,retryAttempt:next,maxRetries:Core.AUTO_RETRY_LIMIT});
       pump();
     },Core.AUTO_RETRY_DELAY_MS);
   }else removeJob(job);
@@ -860,10 +972,10 @@ function pump() {
   if(pumping || !providerAllowsCalls())return;
   pumping=true;
   try {
-    queue=queue.filter(job=>jobs.get(job.key)===job && !job.controller.signal.aborted && job.revision===revision && job.clientEpoch===job.client.cancelEpoch && clients.has(job.client));
+    queue=queue.filter(job=>jobs.get(job.key)===job && !job.controller.signal.aborted && job.revision===revision && jobAudienceActive(job));
     while(queue.length) {
       const job=queue[0];
-      if(!currentTaskAllowed(job)){queue.shift();abortJob(job,true);jobError(job,'已暂停自动分析。','PAUSED');continue;}
+      if(!currentTaskAllowed(job)){queue.shift();jobError(job,'已暂停自动分析。','PAUSED');abortJob(job,true);continue;}
       if(apiSlots.size>=apiLimit(job.settings))break;
       queue.shift();runningJobs.add(job);job.started=true;
       if(job.nextRetryAttempt){job.retryAttempts=job.nextRetryAttempt;job.nextRetryAttempt=undefined;}
@@ -884,7 +996,7 @@ async function executeJob(job) {
     startAPIDeadline(job);
     if(!commentsJob(job)&&!draftJob(job))void persistQuotas().catch(()=>{});
     if(!liveJob(job))return;
-    send(client.port,{type:commentsJob(job)?'COMMENT_START':'START',requestId,retryAttempt:job.retryAttempts,maxRetries:Core.AUTO_RETRY_LIMIT,...(commentsJob(job)?{}:{used})});
+    sendJob(job,{type:commentsJob(job)?'COMMENT_START':'START',requestId,retryAttempt:job.retryAttempts,maxRetries:Core.AUTO_RETRY_LIMIT,...(commentsJob(job)?{}:{used})});
     const onUpdate=update=>{
       job.billing={...job.billing,...billingMetadata(update,job.settings.provider)};
       const diagnostics=requestMetadata(update,job.settings.provider).requestDiagnostics;if(diagnostics)job.requestDiagnostics=diagnostics;
@@ -895,7 +1007,7 @@ async function executeJob(job) {
         if(text.trim())job.retainedFactCheck={...sanitizeAnalysis({...update,text}),...job.billing,provider:job.settings.provider,apiVerification:'only',verified:false,searched:update.searched===true};
         else if(job.attemptHasReaderText||!job.retryAttempts)delete job.retainedFactCheck;
       }
-      if(liveJob(job)&&!commentsJob(job))send(client.port,{type:'UPDATE',requestId,...(hasText&&(text.trim()||job.attemptHasReaderText||!job.retainedFactCheck)?{text}:{}),phase:update.phase,
+      if(liveJob(job)&&!commentsJob(job))sendJob(job,{type:'UPDATE',requestId,...(hasText&&(text.trim()||job.attemptHasReaderText||!job.retainedFactCheck)?{text}:{}),phase:update.phase,
         verificationStatus:update.verificationStatus,warning:update.warning,...(job.settings.provider==='x-native'?{provider:'x-native',verified:false,searched:false}:{}),...(!hasText||text.trim()||job.attemptHasReaderText||!job.retainedFactCheck?{sources:update.sources}:{}),...aggregateBilling(job,job.billing),...verificationMetadata(update,job.settings.apiVerification,text||'')});
     };
     const result=withBillingMetadata(await (['build','x-native'].includes(job.settings.provider)?runAPI(job,onUpdate):waitForAbort(trackedAPICall(job,onUpdate),signal)),job.settings.provider,commentsJob(job)?undefined:job.settings.apiVerification);
@@ -911,7 +1023,7 @@ async function executeJob(job) {
         // The current attempt's empty/tool-only final retracts its own stream.
         // It must not destroy a genuine partial retained from an earlier try.
         job.retainedFactCheck=job.previousPartial;
-        send(client.port,{type:'UPDATE',requestId,text:job.previousPartial?.text||'',sources:job.previousPartial?.sources||[],phase:'verify',verificationStatus:'pending',...aggregateBilling(job,job.billing)});
+        sendJob(job,{type:'UPDATE',requestId,text:job.previousPartial?.text||'',sources:job.previousPartial?.sources||[],phase:'verify',verificationStatus:'pending',...aggregateBilling(job,job.billing)});
         throw Object.assign(new Error('Grok 未返回可显示的核查答案，可手动重试。'),{code:'API_INCOMPLETE',verificationFailure:{stage:'verify',code:'INCOMPLETE',errorCode:'API_INCOMPLETE'},...job.billing});
       }
       result.text=reader.text.slice(0,30000);
@@ -935,14 +1047,18 @@ async function executeJob(job) {
       }
     }
     const recovered={retryAttempts:job.retryAttempts};
-    if(liveJob(job))send(client.port,commentsJob(job)?{type:'COMMENT_RESULT',requestId,comments:result.comments,cached:false,...aggregateBilling(job,job.billing),...recovered}:{type:'RESULT',requestId,result,cached:false,...recovered});
+    if(liveJob(job))sendJob(job,commentsJob(job)?{type:'COMMENT_RESULT',requestId,comments:result.comments,cached:false,...aggregateBilling(job,job.billing),...recovered}:{type:'RESULT',requestId,result,cached:false,...recovered});
   } catch(e) {
+    if(job.subscribers&&(job.cancelled||job.restartAfterSettle)&&!['X_NATIVE_CANCEL_UNCONFIRMED','BUILD_CANCEL_UNCONFIRMED'].includes(e.code)){
+      sendCancelledSubscribers(job,{type:'ERROR',error:'请求已取消；可手动重试。',code:'CANCELLED',retryAttempts:job.retryAttempts||0,...aggregateBilling(job,job.billing)});return;
+    }
     if(job.settings.provider==='x-native'&&e.code==='X_NATIVE_CANCEL_UNCONFIRMED'){
+      job.transportBlocked=true;
       const safe=SuperXNative.publicError(e);
       for(const waiting of [...jobs.values()].filter(item=>item!==job&&item.settings.provider==='x-native'&&!runningJobs.has(item))){jobError(waiting,safe.error,safe.code);abortJob(waiting);}
       // The provider retains its source-bound gate until CLOSED or disconnect.
       // This error must take precedence over the initiating timeout/cancel.
-      if(nativeJobCurrent(job)&&clients.has(client)&&job.revision===revision&&(!jobs.has(job.key)||jobs.get(job.key)===job))jobError(job,safe.error,safe.code,aggregateBilling(job,job.billing));
+      if(job.subscribers||nativeJobCurrent(job)&&clients.has(client)&&job.revision===revision&&(!jobs.has(job.key)||jobs.get(job.key)===job))jobError(job,safe.error,safe.code,aggregateBilling(job,job.billing));
       return;
     }
     if(liveJob(job)&&job.settings.provider==='x-native'&&['X_NATIVE_LOGIN_REQUIRED','X_NATIVE_USAGE_LIMIT','X_NATIVE_PAGE_ERROR','X_NATIVE_UNAVAILABLE','X_NATIVE_ADAPTER_CHANGED'].includes(e.code)){
@@ -955,8 +1071,8 @@ async function executeJob(job) {
       // reports an unconfirmed cancellation. That stronger safety result must
       // never fall through to the generic TIMEOUT retry path.
       job.billing={...job.billing,...billingMetadata(e.partialResult,job.settings.provider),...billingMetadata(e,job.settings.provider)};
-      stopUnavailableBuild(e.code);
-      if(clients.has(client)&&(!jobs.has(job.key)||jobs.get(job.key)===job))jobError(job,SuperXBuild.publicError(e).error,e.code,aggregateBilling(job,job.billing));
+      job.transportBlocked=true;stopUnavailableBuild(e.code);
+      if(jobAudienceActive(job)&&(!jobs.has(job.key)||jobs.get(job.key)===job))jobError(job,SuperXBuild.publicError(e).error,e.code,aggregateBilling(job,job.billing));
       return;
     }
     if(liveJob(job)) {
@@ -976,7 +1092,7 @@ async function executeJob(job) {
       const failureMetadata={...errorBilling,...diagnosticMetadata,...(commentsJob(job)?(budgetFailure||capacityFailure?{verificationFailure:budgetFailure||capacityFailure}:{}):{...verificationMetadata({verificationFailure:e.verificationFailure||partialResult?.verificationFailure||budgetFailure||capacityFailure},job.settings.apiVerification),partialResult})};
       if(!retryPlan(job,e,safeError.code,failureMetadata))jobError(job,safeError.error,safeError.code,{...failureMetadata,retryAttempts:job.retryAttempts});
       if(job.settings.provider==='build'&&['BUILD_CONNECTION_REQUIRED','BUILD_CANCEL_UNCONFIRMED','BUILD_PERMISSION_REQUIRED','BUILD_LOGIN_REQUIRED','BUILD_VERSION_UNSUPPORTED','BUILD_CONFIG_UNSUPPORTED','BUILD_TOOL_POLICY','BUILD_UNAVAILABLE'].includes(safeError.code))stopUnavailableBuild(safeError.code);
-    } else if(nativeJobCurrent(job)&&signal.aborted && clients.has(client) && job.revision===revision && (!jobs.has(job.key)||jobs.get(job.key)===job)) {
+    } else if(nativeJobCurrent(job)&&signal.aborted && jobAudienceActive(job) && job.revision===revision && (!jobs.has(job.key)||jobs.get(job.key)===job)) {
       const reason=signal.reason;
       const timedOut=reason?.code==='TIMEOUT';
       const billing=aggregateBilling(job,job.billing);

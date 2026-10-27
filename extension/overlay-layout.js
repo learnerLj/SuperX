@@ -133,8 +133,8 @@
   }
 
   /**
-   * The opaque rail starts at the unmodified feed edge and covers all of the
-   * original right column, including the space between its native widgets.
+   * The rail aligns with the native sidebar, keeping the feed and its gutter
+   * unchanged. The caller reserves native search space above its controls.
    */
   function railBounds(primaryRect, sidebarRect, viewport, options = {}) {
     const hide = reason => ({ hidden: true, reason, left: 0, top: 0, width: 0, height: 0 });
@@ -147,8 +147,9 @@
     const minWidth = finite(options.minWidth) && options.minWidth > 0 ? options.minWidth : 220;
     const hasSidebar = sidebarRect && finite(sidebarRect.left) && finite(sidebarRect.right) &&
       sidebarRect.right > sidebarRect.left;
-    const left = Math.max(primaryRect.right, view.left);
-    const naturalRight = hasSidebar ? sidebarRect.right : primaryRect.right + fallbackWidth;
+    const left = Math.max(primaryRect.right, hasSidebar ? sidebarRect.left : primaryRect.right, view.left);
+    const preferred = finite(options.preferredWidth) && options.preferredWidth >= minWidth ? options.preferredWidth : 0;
+    const naturalRight = preferred ? left + preferred : hasSidebar ? sidebarRect.right : primaryRect.right + fallbackWidth;
     const right = Math.min(naturalRight, view.right);
     const width = right - left;
     if (!finite(naturalRight) || !finite(width) || width < minWidth) return hide('no-right-room');

@@ -1,0 +1,30 @@
+---
+title: 同帖请求合并与已开始任务的滚动保留
+status: closed
+---
+
+用户发现Open Original Post后疑似重新分析，刷新会Ready→Queued，移动后疑似取消。按真实代码诊断，不将界面排队状态等同于真实模型调用。
+
+确认：history的Open Original Post仅是target=_blank普通链接，不附带force。后台先cachedAnswer，但worker仅按tabId:requestId去重；前端reuseAnalysis只覆盖同页。跨标签/不同requestId有并行重复风险。普通visible分析在START后进入RETRY_WAIT/重新QUEUED，多个滚动/DOM移除/rail隐藏分支仅为originatedPrefetch附带preserveStarted，可能取消已开始逻辑任务。缓存结果异步入库后才可确保重开无请求；检查完成后立即断开对排队写入的影响。
+
+实现边界：后台对相同分析identity（provider/account/credential代/revision/cacheEpoch+现有fingerprint）共享逻辑任务，包含queued/running/retry；同键force加入当前任务，不再次并发，新force在无当前任务时仍绕过旧缓存。不同帖保持10并发。取消订阅不误伤其他订阅；native源tab不可转移，owner消失时等待实际关闭再在存活tab续开。draft/comments不纳入新去重。已有缓存键的语言/模型/账号隔离不放宽。
+
+前端所有analysis的条件取消保留曾started状态，真正尚未开始且离开可见/预加载窗口仍撤回；不把任何UI移动变成无限预取。页面导航/账号变化安全边界保持。已开始retry/scroll/DOM/rail隐藏回归，跨tab合并与取消/force/读写缓存竞争回归，全量check与独立审查后交付。Chrome实际安装需要用户Reload；不代替用户操作扩展管理页。本轮未获新的commit/push要求，先本地修复验收。
+
+实测基线：重新打开此前Ryan Williams 2114835554177261953，新页主帖和5条预加载均Cached，字符分别1136/1350/1756/1228/764/1032；未出现新生成，说明普通已落库重开路径在该实例有效，不能宣称每次Open Original都会失效。
+
+独立spec审查无方向阻断，明确不变量：合并须在await缓存/publicConfig之前预约；完成到异步落库交接必须消费终态或等待pending write；取消source订阅不等于source document失效，后者才需关闭并续开，真实关闭未确认时禁止另tab重开。前台新增6项普通visible START后retry-wait/requeued在滚动/DOM移除/窄栏场景的回归，旧实现失败，新实现305项content测试通过；既有窄栏测试更新为保留已开始analysis，comment原语义保持。
+
+实现已完成、待安装实测：backend在读缓存前注册flights和独立subscriptions，订阅共享状态与结果；仅真正无订阅时取消provider，native来源文档失效后等待transport settle才选存活client重开，关闭未确认不自动重开。后端新增31项回归，主agent实跑359/359；缓存store12项保持通过。另3项明确覆盖另一条写入阻塞期间完成答案后disconnect/CANCEL_ALL再重开、以及RESULT发出后同键读等待pending写入，均通过。
+
+最终主agent npm run check：1560通过／3跳过／0失败，严格TS、生成一致、62文件发布包校验、73文件语法通过。独立后端审查无正确性阻断；按精简建议删除仅被测试消费的waitingForTransport/restarted消息字段，改用既有QUEUED、START、provider调用数和source client断言，完整check复跑仍通过。docs/ARCHITECTURE记录真实owner与生命周期。数学和native认证/Fast协议不变；不新增设置/UI功能。等待用户Reload后检验真实跨页/滚动，不宣称浏览器已安装该修正。
+
+用户后续补充：详情页主帖下的回复不默认分析，保留主动点击入口；关页面从用户收益与额度角度处理。采用最小策略：status详情路由仅URL选中的帖子自动分析，其他回复／上下文卡只被动恢复已有缓存，未有答案时显示「分析此回复」；主动点击先查缓存，不force绕过，归为显式请求且不受滚动撤回。主页feed的五条预加载保持；如果主动打开某回复作为当前详情主帖，视为用户选择的分析目标。没有新增设置开关。关页时若有存活订阅继续共享；否则取消，native关闭未确认仍保留门禁；只完整成功答案持久缓存，不保存失败/取消为成功。
+
+311项content回归通过（增加6项详情页、全部预加载、手动点击、缓存回复、缓存pending、打开回复为主帖），既有两项回复工具栏几何测试改成先主动点击回复再测布局，几何断言不删。手动回复按钮复用原按钮，12语种完整文案；手动首次请求与重新分析分开，前者force=false且可唤醒休眠worker。用户已点击一次Reload，接下来检查实际加载版本；不在未发现必须重载前重复要求。
+
+实屏补充：安装版默认回复规则已生效，主帖缓存正常；向下滚动两屏，11张回复卡保持manual状态，自动queued/running回复数0；截图artifacts/math-rendering-20261027/replies-manual.png。主动点击一条公开回复后可生成；另一页打开同条回复也进入进行态并得到完整终态，单provider调用数/取消隔离以受控后台测试为准，未监听认证header或frames。测试页全部关闭，Debugger诊断关闭。
+
+最后新增手动回复唤醒休眠worker回归，发现manual-only未分析回复会在断连tick误唤醒；限制自动wake目标为automaticEntry，并使manual action走既有afterWake，缓存pending时按钮禁用避免无反应。最终完整npm run check为1567pass/3skip/0fail。实际新tab已加载automaticEntry，但Debugger读取实际content源码确认仍缓存旧manual-wake/idle/button状态三处小补丁，因此需用户最后一次Reload后验证，不能宣称这三处已安装。其余主帖／回复UI已实际验收。
+
+用户再次Reload后，实际X content脚本manualWake、automaticEntry及idleRepliesDoNotWake三项均为true，前轮待加载补丁已确认安装。主帖缓存、回复手动及跨页终态此前已实测；休眠路径由定点回归覆盖。不因后续搜索布局工作把本轮结论混成同一安装状态。
