@@ -1,0 +1,589 @@
+import type { Source } from "../shared/contracts";
+type FocusElement = HTMLElement &
+  Partial<
+    Pick<
+      HTMLInputElement,
+      "selectionStart" | "selectionEnd" | "setSelectionRange"
+    >
+  >;
+interface FocusSnapshot {
+  element: FocusElement | null;
+  range?: Range;
+  start?: number | null;
+  end?: number | null;
+}
+interface Failure {
+  code?: string;
+  stage?: string;
+}
+interface Result {
+  text?: string;
+  sources?: Source[];
+}
+interface APIMessage extends Result {
+  channel?: string;
+  direction?: string;
+  nonce?: string;
+  kind?: string;
+  code?: string;
+  stage?: string;
+  retain?: boolean;
+}
+interface Task {
+  nonce: string;
+  prompt: string;
+  root: HTMLElement | null;
+  sent: boolean;
+  ready: boolean;
+  queued: boolean;
+  uiReleased: boolean;
+  uiClean: boolean;
+  cancelled?: boolean;
+  cancelRequested?: boolean;
+  blocked?: boolean;
+  finishing?: boolean;
+  taken?: boolean;
+  restoring?: boolean;
+  owned?: boolean;
+  hadInert?: boolean;
+  openIssued?: boolean;
+  connecting?: boolean;
+  handingOff?: boolean;
+  focusFault?: boolean;
+  restores?: number;
+  focus?: FocusSnapshot;
+  style?: HTMLStyleElement;
+  opener?: HTMLButtonElement;
+  cleaning?: Promise<boolean>;
+  heartbeat?: number;
+  cancelTimer?: number;
+  recoveryTimer?: number;
+  onFocus: EventListener;
+  onSelection: EventListener;
+  onIntent: EventListener;
+  onAPI: (event: MessageEvent<APIMessage>) => void;
+}
+export interface Panel {
+  run(input: { nonce: string; prompt: string }): void;
+  cancel(nonce: string): void;
+  disconnect(): void;
+}
+export interface API {
+  create(options: {
+    document: Document;
+    window: Window;
+    send(message: {
+      type: "NATIVE_EVENT";
+      nonce: string;
+      kind: string;
+      code?: string;
+      stage?: string;
+      text?: string;
+      sources?: Source[];
+    }): void;
+  }): Panel;
+}
+/* Bootstrap X's same-page connection; answers come from its raw API bridge. */
+(function (root: typeof globalThis, factory: () => API) {
+  const api = factory();
+  if (typeof module === "object" && module.exports) module.exports = api;
+  root.SuperXNativePanel = api;
+})(globalThis, function () {
+  "use strict";
+  const CHANNEL = "SUPERX_NATIVE_API_V1";
+  const OPENER =
+    'button[data-testid="GrokDrawerHeader"],[data-testid="GrokDrawerHeader"] > button';
+  function panel(doc: Document) {
+    return (
+      doc
+        .querySelector("#layers [data-grok-composer]")
+        ?.closest<HTMLElement>('[data-testid="GrokDrawer"]') || null
+    );
+  }
+  const editor = (root: HTMLElement) =>
+    root.querySelector<HTMLElement & { value?: string }>(
+      '[contenteditable="true"][role="textbox"][data-lexical-editor="true"]',
+    );
+  const generating = (root: HTMLElement) =>
+    Boolean(
+      root.querySelector(
+        'button[aria-label="Stop"],button[aria-label="停止"],button:has(svg[data-icon="icon-stop"])',
+      ),
+    );
+  function create({
+    document: doc,
+    window: view,
+    send,
+  }: Parameters<API["create"]>[0]) {
+    const tasks = new Map<string, Task>();
+    let uiOwner: Task | null = null;
+    const live = (task: Task) => tasks.get(task.nonce) === task;
+    const blocked = () => [...tasks.values()].some((task) => task.blocked);
+    const delay = (ms: number) =>
+      new Promise<void>((resolve) => view.setTimeout(resolve, ms));
+    const emit = (
+      task: Pick<Task, "nonce">,
+      kind: string,
+      value: Result & Failure = {},
+    ) => {
+      try {
+        send({ type: "NATIVE_EVENT", nonce: task.nonce, kind, ...value });
+      } catch {}
+    };
+    const post = (task: Task, type: string, value: { prompt?: string } = {}) =>
+      view.postMessage(
+        {
+          channel: CHANNEL,
+          direction: "TO_API",
+          nonce: task.nonce,
+          type,
+          ...value,
+        },
+        view.location.origin,
+      );
+    const error = (code: string, stage?: string): Failure => ({ code, stage });
+    const isOpen = (task: Task) =>
+      Boolean(task.root?.isConnected && panel(doc) === task.root);
+    function nativeNode(task: Task, node: Node | null) {
+      const element =
+        node?.nodeType === 3
+          ? node.parentElement
+          : (node as HTMLElement | null);
+      return Boolean(
+        task.root?.contains(node) ||
+        element?.closest?.(
+          '[data-testid="GrokDrawer"],[data-testid="GrokDrawerHeader"]',
+        ),
+      );
+    }
+    function snapshot(task: Task) {
+      const element = doc.activeElement as FocusElement | null;
+      if (nativeNode(task, element)) {
+        if (!task.focus) task.focus = { element: doc.body };
+        return;
+      }
+      const selection = view.getSelection?.();
+      let range;
+      if (selection?.rangeCount) {
+        const candidate = selection.getRangeAt(0);
+        if (
+          !nativeNode(task, candidate.startContainer) &&
+          !nativeNode(task, candidate.endContainer)
+        )
+          range = candidate.cloneRange();
+      }
+      task.focus = {
+        element,
+        range,
+        start: element?.selectionStart,
+        end: element?.selectionEnd,
+      };
+    }
+    function restore(task: Task) {
+      const saved = task.focus;
+      if (!saved || task.taken || task.restoring) return;
+      task.restoring = true;
+      try {
+        const selection = view.getSelection?.();
+        if (selection?.rangeCount && nativeNode(task, selection.anchorNode))
+          selection.removeAllRanges();
+        if (nativeNode(task, doc.activeElement))
+          (doc.activeElement as HTMLElement).blur();
+        if (
+          saved.element?.isConnected &&
+          saved.element !== doc.body &&
+          !nativeNode(task, saved.element) &&
+          doc.activeElement !== saved.element
+        )
+          saved.element.focus({ preventScroll: true });
+        const range = saved.range,
+          current = selection?.rangeCount ? selection.getRangeAt(0) : null;
+        if (
+          range?.startContainer?.isConnected &&
+          range?.endContainer?.isConnected &&
+          !nativeNode(task, range.startContainer) &&
+          !nativeNode(task, range.endContainer)
+        ) {
+          if (
+            selection &&
+            (!current ||
+              current.startContainer !== range.startContainer ||
+              current.startOffset !== range.startOffset ||
+              current.endContainer !== range.endContainer ||
+              current.endOffset !== range.endOffset)
+          ) {
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+        } else if (
+          typeof saved.start === "number" &&
+          saved.element?.isConnected &&
+          (saved.element.selectionStart !== saved.start ||
+            saved.element.selectionEnd !== saved.end)
+        )
+          saved.element.setSelectionRange?.(saved.start, saved.end!);
+      } finally {
+        task.restoring = false;
+      }
+    }
+    function own(task: Task, root: HTMLElement) {
+      task.root = root;
+      if (!task.owned) {
+        task.hadInert = root.hasAttribute("inert");
+        task.owned = true;
+      }
+      root.setAttribute("inert", "");
+      root.setAttribute("data-superx-owned-panel", "");
+    }
+    function releaseUI(task: Task) {
+      if (task.uiReleased) return;
+      task.uiReleased = true;
+      if (uiOwner !== task) return;
+      task.style?.remove();
+      task.root?.removeAttribute("data-superx-owned-panel");
+      if (task.owned && !task.hadInert) task.root?.removeAttribute("inert");
+      doc.documentElement.removeAttribute("data-superx-native-running");
+      for (const [name, handler] of [
+        ["focusin", task.onFocus],
+        ["selectionchange", task.onSelection],
+        ["pointerdown", task.onIntent],
+        ["keydown", task.onIntent],
+      ] as const)
+        doc.removeEventListener(name, handler, true);
+    }
+    function release(task: Task) {
+      releaseUI(task);
+      view.clearInterval(task.heartbeat);
+      view.removeEventListener("message", task.onAPI);
+      view.clearTimeout(task.cancelTimer);
+      view.clearTimeout(task.recoveryTimer);
+      tasks.delete(task.nonce);
+      freeUI(task);
+    }
+    function freeUI(task: Task) {
+      if (uiOwner === task && task.uiClean) {
+        uiOwner = null;
+        pump();
+      }
+    }
+    async function handoff(task: Task) {
+      if (!live(task) || task.cancelled || task.handingOff) return;
+      task.handingOff = true;
+      const clean = await cleanup(task);
+      if (!live(task)) return;
+      if (clean) freeUI(task);
+      else cancel(task.nonce);
+    }
+    async function cleanup(task: Task) {
+      if (task.uiClean) return true;
+      if (task.cleaning) return task.cleaning;
+      task.cleaning = (async () => {
+        if (task.openIssued && !task.root && !task.taken) {
+          const until = Date.now() + 2500;
+          while (!task.root && Date.now() < until) {
+            task.root = panel(doc);
+            if (!task.root) await delay(100);
+          }
+        }
+        if (isOpen(task) && !task.taken) {
+          task
+            .root!.querySelector<HTMLButtonElement>(
+              'button[aria-label="Collapse"]',
+            )
+            ?.click();
+          const until = Date.now() + 2500;
+          while (isOpen(task) && !task.taken && Date.now() < until)
+            await delay(100);
+          await delay(200);
+          if (
+            doc.activeElement === task.opener ||
+            doc.activeElement === doc.body ||
+            nativeNode(task, doc.activeElement)
+          )
+            restore(task);
+        }
+        releaseUI(task);
+        task.uiClean = (!isOpen(task) || task.taken)!;
+        return task.uiClean;
+      })();
+      return task.cleaning;
+    }
+    function recoverClosedPanel(task: Task) {
+      if (!live(task)) return;
+      if (!isOpen(task)) {
+        task.uiClean = true;
+        release(task);
+        emit(task, "CLOSED");
+      } else
+        task.recoveryTimer = view.setTimeout(
+          () => recoverClosedPanel(task),
+          300,
+        );
+    }
+    async function block(task: Task) {
+      if (!live(task) || task.blocked || task.finishing) return;
+      task.blocked = true;
+      await cleanup(task);
+      if (live(task))
+        emit(task, "ERROR", { code: "X_NATIVE_CANCEL_UNCONFIRMED" });
+    }
+    async function finish(
+      task: Task,
+      result: Result | null = null,
+      failure: Failure | null = null,
+      closed = false,
+    ) {
+      if (!live(task) || task.finishing) return;
+      task.finishing = true;
+      task.cancelled = true;
+      const clean = await cleanup(task);
+      if (!clean) {
+        task.finishing = false;
+        task.blocked = true;
+        emit(task, "ERROR", { code: "X_NATIVE_CANCEL_UNCONFIRMED" });
+        recoverClosedPanel(task);
+        return;
+      }
+      release(task);
+      if (closed || task.cancelRequested || task.blocked) emit(task, "CLOSED");
+      else if (failure) {
+        emit(task, "ERROR", {
+          code: failure.code || "X_NATIVE_LAYOUT",
+          stage: failure.stage,
+        });
+        // A non-retained rejection owns no remaining API work. Acknowledge
+        // cleanup so the provider does not retain a phantom blocked task.
+        if (failure.code === "X_NATIVE_CANCEL_UNCONFIRMED")
+          emit(task, "CLOSED");
+      } else emit(task, "RESULT", result!);
+    }
+    function cancel(nonce: string) {
+      const task = tasks.get(nonce);
+      if (!task) {
+        emit({ nonce }, "CLOSED");
+        return;
+      }
+      if (task.cancelRequested) return;
+      task.cancelRequested = true;
+      task.cancelled = true;
+      if (uiOwner === task || task.sent || task.connecting)
+        post(task, "CANCEL");
+      if (!task.sent && !task.connecting) {
+        void finish(task, null, null, true);
+        return;
+      }
+      task.cancelTimer = view.setTimeout(() => block(task), 4000);
+    }
+    function takeover(task: Task) {
+      if (task.taken) return;
+      task.taken = true;
+      releaseUI(task);
+      cancel(task.nonce);
+    }
+    async function wait<T>(
+      task: Task,
+      check: () => T,
+      ms = 25000,
+    ): Promise<NonNullable<T>> {
+      const until = Date.now() + ms;
+      while (live(task) && !task.cancelled) {
+        const found = check();
+        if (found) return found;
+        if (Date.now() >= until) break;
+        await delay(100);
+      }
+      throw error(
+        task.cancelled ? "X_NATIVE_INTERRUPTED" : "X_NATIVE_LAYOUT",
+        "editor-ready",
+      );
+    }
+    async function execute(task: Task) {
+      task.style = doc.createElement("style");
+      task.style.textContent =
+        'html[data-superx-native-running] #layers [data-testid="GrokDrawer"]:has([data-grok-composer]){position:fixed!important;left:-20000px!important;top:0!important;width:1024px!important;height:900px!important;opacity:0!important;pointer-events:none!important;}';
+      doc.documentElement.setAttribute("data-superx-native-running", "");
+      doc.documentElement.append(task.style);
+      post(task, "PREPARE");
+      task.opener = await wait(
+        task,
+        () => doc.querySelector<HTMLButtonElement>(OPENER),
+        5000,
+      );
+      if (!live(task) || task.cancelled) return;
+      if (panel(doc)) throw error("X_NATIVE_PANEL_BUSY");
+      task.openIssued = true;
+      task.opener!.click();
+      const opened = await wait(task, () => panel(doc));
+      if (!live(task) || task.cancelled) return;
+      own(task, opened);
+      const input = await wait(task, () => editor(task.root!));
+      if (!live(task) || task.cancelled) return;
+      if (
+        String(input.innerText || input.value || "").trim() ||
+        generating(task.root!)
+      )
+        throw error("X_NATIVE_PANEL_BUSY");
+      task.connecting = true;
+      post(task, "CONNECT");
+      await wait(task, () => task.ready, 25000);
+      if (!live(task) || task.cancelled) return;
+      task.sent = true;
+      post(task, "RUN", { prompt: task.prompt });
+    }
+    function pump() {
+      if (uiOwner || blocked()) return;
+      const task = [...tasks.values()].find(
+        (item) => item.queued && !item.cancelled && !item.finishing,
+      );
+      if (!task) return;
+      task.queued = false;
+      uiOwner = task;
+      task.uiReleased = false;
+      task.uiClean = false;
+      snapshot(task);
+      if (panel(doc)) {
+        void finish(task, null, error("X_NATIVE_PANEL_BUSY"));
+        return;
+      }
+      for (const [name, handler] of [
+        ["focusin", task.onFocus],
+        ["selectionchange", task.onSelection],
+        ["pointerdown", task.onIntent],
+        ["keydown", task.onIntent],
+      ] as const)
+        doc.addEventListener(name, handler, true);
+      void execute(task).catch((failure) => {
+        if (!live(task) || task.finishing) return;
+        if (task.sent || task.connecting) cancel(task.nonce);
+        else {
+          post(task, "CANCEL");
+          void finish(task, null, failure as Failure);
+        }
+      });
+    }
+    function run({ nonce, prompt }: Parameters<Panel["run"]>[0]) {
+      if (tasks.has(nonce)) return;
+      if (blocked()) {
+        emit({ nonce }, "ERROR", { code: "X_NATIVE_CANCEL_UNCONFIRMED" });
+        emit({ nonce }, "CLOSED");
+        return;
+      }
+      if (tasks.size >= 10) {
+        emit({ nonce }, "ERROR", { code: "X_NATIVE_PANEL_BUSY" });
+        return;
+      }
+      if (
+        typeof nonce !== "string" ||
+        typeof prompt !== "string" ||
+        !prompt.trim() ||
+        prompt.length > 60000
+      ) {
+        emit({ nonce }, "ERROR", {
+          code: "X_NATIVE_LAYOUT",
+          stage: "input-size",
+        });
+        return;
+      }
+      if (!uiOwner && panel(doc)) {
+        emit({ nonce }, "ERROR", { code: "X_NATIVE_PANEL_BUSY" });
+        return;
+      }
+      const task = {
+        nonce,
+        prompt,
+        root: null,
+        sent: false,
+        ready: false,
+        queued: true,
+        uiReleased: true,
+        uiClean: true,
+      } as Task;
+      tasks.set(nonce, task);
+      task.onAPI = (event) => {
+        const m = event.data;
+        if (
+          event.source !== view ||
+          event.origin !== view.location.origin ||
+          m?.channel !== CHANNEL ||
+          m.direction !== "FROM_API" ||
+          m.nonce !== nonce ||
+          !live(task)
+        )
+          return;
+        if (m.kind === "READY") {
+          task.ready = true;
+          return;
+        }
+        if (m.kind === "RUNNING") {
+          void handoff(task);
+          return;
+        }
+        if (m.kind === "TAKEOVER") {
+          takeover(task);
+          return;
+        }
+        if (m.kind === "UPDATE") {
+          if (!task.cancelled && !task.blocked && !task.finishing)
+            emit(task, "UPDATE", { text: m.text, sources: m.sources });
+          return;
+        }
+        if (m.kind === "ERROR" && m.code === "X_NATIVE_CANCEL_UNCONFIRMED") {
+          if (m.retain) void block(task);
+          else void finish(task, null, error(m.code));
+          return;
+        }
+        if (m.kind === "RESULT")
+          void finish(task, { text: m.text, sources: m.sources });
+        else if (m.kind === "CLOSED") void finish(task, null, null, true);
+        else if (m.kind === "ERROR")
+          void finish(task, null, error(m.code!, m.stage));
+      };
+      task.onIntent = (event) => {
+        if (
+          event.isTrusted &&
+          !task.taken &&
+          (nativeNode(task, event.target as Node) ||
+            (task.openIssued &&
+              (event.target as HTMLElement).closest?.(OPENER)))
+        )
+          takeover(task);
+      };
+      task.onSelection = () => {
+        if (
+          !task.restoring &&
+          !task.taken &&
+          !nativeNode(task, doc.activeElement)
+        )
+          snapshot(task);
+      };
+      task.onFocus = (event) => {
+        if (task.restoring || task.taken || task.focusFault) return;
+        const root = task.root || (task.openIssued && panel(doc));
+        if ((root || null)?.contains(event.target as Node)) {
+          own(task, root as HTMLElement);
+          if ((task.restores = (task.restores || 0) + 1) > 12) {
+            task.focusFault = true;
+            cancel(nonce);
+            return;
+          }
+          restore(task);
+        } else if (task.finishing && event.target === task.opener)
+          restore(task);
+        else snapshot(task);
+      };
+      view.addEventListener("message", task.onAPI);
+      task.heartbeat = view.setInterval(() => emit(task, "PING"), 20000);
+      pump();
+    }
+    return {
+      run,
+      cancel,
+      disconnect() {
+        for (const task of [...tasks.values()]) cancel(task.nonce);
+      },
+    };
+  }
+  return { create };
+});
+
+export type {};

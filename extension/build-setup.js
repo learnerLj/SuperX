@@ -1,24 +1,80 @@
-(function(root){
-  'use strict';
-  const VERSION='1.0.60';
-  const DISABLED=Object.freeze(['GROK_SUBAGENTS','GROK_WORKFLOWS','GROK_AGENT_DASHBOARD','GROK_MANAGED_MCPS_ENABLED','GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED',...['CLAUDE','CURSOR','CODEX'].flatMap(vendor=>['SKILLS','RULES','AGENTS','MCPS','HOOKS','SESSIONS'].map(surface=>`GROK_${vendor}_${surface}_ENABLED`))]);
-  const LOADERS=Object.freeze(['NODE_OPTIONS','NODE_PATH','PYTHONPATH','PYTHONHOME','NPM_CONFIG_USERCONFIG','NPM_CONFIG_GLOBALCONFIG','BASH_ENV','ENV','ZDOTDIR','LD_PRELOAD','DYLD_INSERT_LIBRARIES','DYLD_LIBRARY_PATH','DYLD_FRAMEWORK_PATH']);
-  const ARGS=Object.freeze(['--permission-mode','dontAsk','--no-subagents','--deny','Bash','--deny','Read','--deny','Edit','--deny','Write','--deny','Grep','--deny','MCPTool','agent','--no-leader','serve','--bind']);
-  function validate(value){
-    if(!value||typeof value!=='object')throw new TypeError('Invalid local Grok launch configuration.');
-    const platform=['windows','win32'].includes(value.platform)?'windows':['macos','mac','darwin'].includes(value.platform)?'macos':null;
-    if(!platform||!Number.isInteger(value.port)||value.port<1024||value.port>65535||typeof value.secret!=='string'||!/^[-_A-Za-z0-9]{24,256}$/.test(value.secret)||/^(?:xai|sk)-/i.test(value.secret))throw new TypeError('Invalid local Grok launch configuration.');
-    return {platform,port:value.port,secret:value.secret};
+// GENERATED from src/providers/build-setup.ts. Edit src/ and run npm run build.
+(function buildSetupFactory(root) {
+  "use strict";
+  const VERSION = "1.0.60";
+  const DISABLED = Object.freeze([
+    "GROK_SUBAGENTS",
+    "GROK_WORKFLOWS",
+    "GROK_AGENT_DASHBOARD",
+    "GROK_MANAGED_MCPS_ENABLED",
+    "GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED",
+    ...["CLAUDE", "CURSOR", "CODEX"].flatMap(
+      (vendor) => ["SKILLS", "RULES", "AGENTS", "MCPS", "HOOKS", "SESSIONS"].map(
+        (surface) => `GROK_${vendor}_${surface}_ENABLED`
+      )
+    )
+  ]);
+  const LOADERS = Object.freeze([
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "NPM_CONFIG_USERCONFIG",
+    "NPM_CONFIG_GLOBALCONFIG",
+    "BASH_ENV",
+    "ENV",
+    "ZDOTDIR",
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH"
+  ]);
+  const ARGS = Object.freeze([
+    "--permission-mode",
+    "dontAsk",
+    "--no-subagents",
+    "--deny",
+    "Bash",
+    "--deny",
+    "Read",
+    "--deny",
+    "Edit",
+    "--deny",
+    "Write",
+    "--deny",
+    "Grep",
+    "--deny",
+    "MCPTool",
+    "agent",
+    "--no-leader",
+    "serve",
+    "--bind"
+  ]);
+  function validate(value) {
+    if (!value || typeof value !== "object")
+      throw new TypeError("Invalid local Grok launch configuration.");
+    const platform = ["windows", "win32"].includes(
+      value.platform
+    ) ? "windows" : ["macos", "mac", "darwin"].includes(
+      value.platform
+    ) ? "macos" : null;
+    if (!platform || !Number.isInteger(value.port) || value.port < 1024 || value.port > 65535 || typeof value.secret !== "string" || !/^[-_A-Za-z0-9]{24,256}$/.test(value.secret) || /^(?:xai|sk)-/i.test(value.secret))
+      throw new TypeError("Invalid local Grok launch configuration.");
+    return {
+      platform,
+      port: value.port,
+      secret: value.secret
+    };
   }
-  function windows({port,secret}){
-    const loaderPattern=LOADERS.join('|');
+  function windows({ port, secret }) {
+    const loaderPattern = LOADERS.join("|");
     return `& {
   $superxPreviousLocation = Get-Location
   $superxPreviousEnvironment = @{}
   $superxRoot = $null
   $superxTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
   $superxNames = @(Get-ChildItem Env: | Where-Object { $_.Name -match '^(XAI_|GROK_)|(?:API_?KEY|ACCESS_?TOKEN|AUTH_?TOKEN|REFRESH_?TOKEN|ID_?TOKEN)$|^(${loaderPattern})$' } | ForEach-Object { $_.Name })
-  $superxNames += @('GROK_HOME', 'GROK_AUTH_PATH', 'GROK_AGENT_SECRET', ${DISABLED.map(name=>`'${name}'`).join(', ')})
+  $superxNames += @('GROK_HOME', 'GROK_AUTH_PATH', 'GROK_AGENT_SECRET', ${DISABLED.map((name) => `'${name}'`).join(", ")})
   $superxNames = @($superxNames | Select-Object -Unique)
   foreach ($superxName in $superxNames) { $superxPreviousEnvironment[$superxName] = [Environment]::GetEnvironmentVariable($superxName, 'Process') }
   try {
@@ -38,12 +94,12 @@
     $env:GROK_HOME = $superxHome
     $env:GROK_AUTH_PATH = $superxAuthPath
     $env:GROK_AGENT_SECRET = '${secret}'
-${DISABLED.map(name=>`    $env:${name} = '0'`).join('\n')}
+${DISABLED.map((name) => `    $env:${name} = '0'`).join("\n")}
     Set-Location -LiteralPath $superxWork -ErrorAction Stop
     $superxVersion = (& $superxGrok --version 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $superxVersion -notmatch '^grok\\s+${VERSION.replace(/\./g,'\\.')}(\\s|$)') { throw 'SuperX currently supports official Grok ${VERSION}. Keep API Key mode if your installed version differs; no version was changed.' }
+    if ($LASTEXITCODE -ne 0 -or $superxVersion -notmatch '^grok\\s+${VERSION.replace(/\./g, "\\.")}(\\s|$)') { throw 'SuperX currently supports official Grok ${VERSION}. Keep API Key mode if your installed version differs; no version was changed.' }
     Write-Host 'SuperX: official Grok is starting on this computer only. Keep this window open. Press Ctrl+C to stop. Do not share the connection code printed by Grok.'
-    & $superxGrok ${ARGS.map(arg=>`'${arg}'`).join(' ')} '127.0.0.1:${port}'
+    & $superxGrok ${ARGS.map((arg) => `'${arg}'`).join(" ")} '127.0.0.1:${port}'
     if ($LASTEXITCODE -ne 0) { throw 'The official Grok service stopped. Review its message above or use API Key mode.' }
   } finally {
     foreach ($superxName in $superxNames) { [Environment]::SetEnvironmentVariable($superxName, $superxPreviousEnvironment[$superxName], 'Process') }
@@ -61,10 +117,8 @@ ${DISABLED.map(name=>`    $env:${name} = '0'`).join('\n')}
   }
 }`;
   }
-  function macos({port,secret}){
-    // Only environment-variable names cross this pipe. No eval, source, shell
-    // interpolation of supplied text, or credential-file reads are performed.
-    const names=`(${LOADERS.join('|')})`;
+  function macos({ port, secret }) {
+    const names = `(${LOADERS.join("|")})`;
     return `(
   set -eu
   umask 077
@@ -104,16 +158,19 @@ ${DISABLED.map(name=>`    $env:${name} = '0'`).join('\n')}
   GROK_AUTH_PATH="$sx_auth"
   GROK_AGENT_SECRET='${secret}'
   export GROK_HOME GROK_AUTH_PATH GROK_AGENT_SECRET
-${DISABLED.map(name=>`  ${name}=0; export ${name}`).join('\n')}
+${DISABLED.map((name) => `  ${name}=0; export ${name}`).join("\n")}
   cd "$sx_root/work"
   sx_version=$("$sx_grok" --version) || { printf '%s\\n' 'Could not check official Grok. Use API Key mode.' >&2; exit 1; }
   case "$sx_version" in 'grok ${VERSION}'|'grok ${VERSION} '*) ;; *) printf '%s\\n' 'SuperX currently supports official Grok ${VERSION}. Keep API Key mode if your installed version differs; no version was changed.' >&2; exit 1 ;; esac
   printf '%s\\n' 'SuperX: official Grok is starting on this computer only. Keep this window open. Press Ctrl+C to stop. Do not share the connection code printed by Grok.'
-  "$sx_grok" ${ARGS.map(arg=>`'${arg}'`).join(' ')} '127.0.0.1:${port}'
+  "$sx_grok" ${ARGS.map((arg) => `'${arg}'`).join(" ")} '127.0.0.1:${port}'
 )`;
   }
-  function command(input){const value=validate(input);return value.platform==='windows'?windows(value):macos(value);}
-  const api=Object.freeze({command,validate,VERSION});
-  root.SuperXBuildSetup=api;
-  if(typeof module==='object'&&module.exports)module.exports=api;
+  function command(input) {
+    const value = validate(input);
+    return value.platform === "windows" ? windows(value) : macos(value);
+  }
+  const api = Object.freeze({ command, validate, VERSION });
+  root.SuperXBuildSetup = api;
+  if (typeof module === "object" && module.exports) module.exports = api;
 })(globalThis);

@@ -736,6 +736,8 @@ test('every supported UI language contains all labels and preserves interpolatio
 
 class UIElement {
   constructor(attrs={}) { this.attrs={...attrs};this.children=[];this.dataset={};this.value=attrs.value||'';this.textContent='';this.listeners={}; }
+  get value() {return this.inputValue;}
+  set value(value) {this.inputValue=String(value);}
   getAttribute(name) { return this.attrs[name]??null; }
   setAttribute(name,value) { this.attrs[name]=String(value); }
   removeAttribute(name) { delete this.attrs[name]; }
@@ -1003,7 +1005,7 @@ test('recommended defaults select Grok 4.3, three requests and one second while 
   const fixture=uiPageFixture('options',original);await settleUI();await settleUI();
   fixture.ids.get('fast-preset').listeners.click();
   assert.equal(fixture.ids.get('api-model').value,'grok-4.3');assert.equal(fixture.ids.get('api-reasoning-effort').value,'none');
-  assert.equal(fixture.ids.get('api-concurrency').value,3);assert.equal(fixture.ids.get('analysis-dwell').value,1);assert.equal(fixture.ids.get('language').value,'ja');
+  assert.equal(fixture.ids.get('api-concurrency').value,'3');assert.equal(fixture.ids.get('analysis-dwell').value,'1');assert.equal(fixture.ids.get('language').value,'ja');
   assert.equal(fixture.ids.get('verify-prompt').value,original.verifyPrompt);assert.equal(fixture.ids.get('comments-prompt').value,original.commentsPrompt);
   assert.equal(fixture.ids.get('api-key').value,'session-secret');assert.equal(fixture.local.settings,original);
   assert.deepEqual(uiMessageTypes(fixture),['GET_UI_LANGUAGE']);
@@ -1220,7 +1222,7 @@ test('live options locale changes preserve drafts and never save settings or sen
   assert.equal(fixture.document.documentElement.dir,'rtl');
   assert.equal(fixture.ids.get('api-key').value,'draft-secret');
   assert.equal(fixture.ids.get('api-model').value,'grok-4.7');
-  assert.equal(fixture.ids.get('api-concurrency').value,7);
+  assert.equal(fixture.ids.get('api-concurrency').value,'7');
   assert.equal(fixture.ids.get('explanation-mode').value,'custom');
   assert.equal(fixture.ids.get('analysis-prompts').hidden,false);
   assert.equal(fixture.ids.get('explanation-mode-help').textContent,ui.t('options.customModeHelp','ar'));
@@ -2466,12 +2468,12 @@ test('reading defaults migrate once while later explicit immediate analysis and 
 test('Settings viewing-time control saves seconds as milliseconds and keeps explicit immediate analysis across reopening',async()=>{
   for(const [seconds,milliseconds]of [['0',0],['0.25',250],['2.5',2500],['30',30000]]){
     const fixture=uiPageFixture('options');await settleUI();await settleUI();
-    assert.equal(fixture.ids.get('analysis-dwell').value,1);assert.equal(fixture.ids.get('api-concurrency').value,3);
+    assert.equal(fixture.ids.get('analysis-dwell').value,'1');assert.equal(fixture.ids.get('api-concurrency').value,'3');
     fixture.ids.get('analysis-dwell').value=seconds;fixture.ids.get('api-concurrency').value='4';fixture.ids.get('analysis-dwell').listeners.input();
     assert.equal(fixture.ids.get('status').textContent,ui.t('options.unsavedChanges','en'));
     const form=fixture.ids.get('settings-form');await form.listeners.submit({preventDefault(){},currentTarget:form});
     assert.equal(fixture.local.settings.dwellMs,milliseconds);assert.equal(fixture.local.settings.apiConcurrency,4);assert.equal(fixture.local.settings.analysisDefaultsVersion,1);
-    const reopened=uiPageFixture('options',fixture.local.settings);await settleUI();await settleUI();assert.equal(Number(reopened.ids.get('analysis-dwell').value),Number(seconds));assert.equal(reopened.ids.get('api-concurrency').value,4);
+    const reopened=uiPageFixture('options',fixture.local.settings);await settleUI();await settleUI();assert.equal(Number(reopened.ids.get('analysis-dwell').value),Number(seconds));assert.equal(reopened.ids.get('api-concurrency').value,'4');
   }
 });
 

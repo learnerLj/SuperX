@@ -1,5 +1,13 @@
 # Changelog
 
+## Full TypeScript runtime — 2026-10-28
+
+- Migrate every first-party extension runtime to strict TypeScript: the MV3 worker, all four provider paths, native API/panel bridges, post extraction, Markdown rendering, drafts, reading rail, settings, popup, onboarding, history and localization. All 27 first-party JavaScript entries are generated from `src/`; the two official Marked UMD distributions remain vendor files.
+- Preserve runtime behavior, manifest permissions, file names, script order, worker lexical state, CommonJS/browser globals and MAIN/isolated boundaries. Keep Fast, ten-way concurrency, cache identities, cancellation acknowledgements, reply/manual behavior and rail preferences unchanged.
+- Add locked Chrome API types and concrete worker, transport, DOM, task and source/result contracts. Keep strict checking and indexed-access checks; prohibit explicit `any`, source check suppressions and unchecked double assertions. Build coverage rejects unowned runtime scripts and drift, including nested files.
+- Extend build/source-reconstruction and loading-order tests, negative type checks and a regression retaining the draft input listener's optional DOM-method guard. Make the test DOM's input value coercion match browser strings. See `docs/ARCHITECTURE.md` and `CONTRIBUTING.md` for source owners and rebuild steps.
+- Validation: 1,598 automated checks passed, 3 platform-specific tests skipped; strict type checks, source formatting, generated drift checks, complete runtime ownership and public-source reconstruction passed. Independent implementation reviews passed after restoring the draft input guard. Chrome local preview verified settings, Markdown lists/citations/tables and rail dragging. The migration build requires extension Reload for live X verification; prior live verification covered the preceding authentication fix.
+
 ## Fork fixes — 2026-10-28 (local, installed verification passed)
 
 - Remove the fixed webpack module ID dependency from X built-in Grok authentication. X renamed the observed formatter module from `228952` to `387111` while retaining its auth wire format; SuperX now handles the two explicitly supported formats locally in MAIN-world memory. Unknown or malformed credentials fail closed without opening a socket or exposing credentials.

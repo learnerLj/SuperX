@@ -2,34 +2,37 @@
 
 ## 源码与构建
 
-TypeScript 核心源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。四个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
+扩展全部自有运行时的 TypeScript 源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。27 个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
 
 ```sh
 npm ci
 npm run build
 npm run typecheck
+npm run format:check
 npm test
 npm run check
 npm run package
 ```
 
-`npm run build` 先做严格类型检查，再将模块打成 Chrome 120 可用的本地 IIFE。Node 测试通过同一生成入口加载生产逻辑，不维护第二套测试实现。`npm test` 的 pretest 与 `npm run check` 都会检查生成一致性。源码包包含 TypeScript、配置、依赖锁与构建工具；安装包只包含运行所需的本地资源。
+`npm run build` 先核对完整入口覆盖并做严格类型检查。已有四个导出模块保持本地 IIFE 打包；其他 classic scripts 只擦除类型，保留 UMD、顶层词法、脚本顺序和各 world 边界，不加入运行时 import/export。类型导入、导出先由 TypeScript AST 识别并移除模块标记，避免 esbuild 将顶层 `this` 改成 `undefined`。Node 测试通过同一生成入口加载生产逻辑，不维护第二套测试实现。`npm test` 的 pretest 与 `npm run check` 都会检查生成一致性。源码包包含 TypeScript、配置、依赖锁与构建工具；安装包只包含运行所需的本地资源。
 
-这是渐进迁移：provider 调度、缓存与预加载算法已经有 TypeScript owner；已有 X DOM/UI、认证、传输协议和 Markdown renderer 仍保留 JavaScript。新领域逻辑应进入 `src/`；迁移已有模块时，一并删除原手写 owner，并保留生成入口及回归测试，避免两处都能修改。
+扩展不再有自有手写 JavaScript 运行时。`extension/marked.umd.js` 与 `extension/marked-cjk-friendly.umd.js` 是唯一两个第三方发行文件豁免，不修改第三方源码。HTML、CSS 和静态资源仍在 `extension/`；Node ESM 工具与现有 JS 行为测试属于开发工具，保持其原格式。所有业务修改都编辑 `src/` 后构建，不维护第二份手写实现。
+
+构建从安装目录递归枚举 JS，与 TS owner 双向核对；新增遗漏文件、缺 owner、生成物漂移均失败。`npm run format` / `npm run format:check` 使用锁定版本 Prettier 统一 TS 源码排版，全量检查包含格式验收。源码禁止显式 `any`、关闭类型检查的注释和 `as unknown as` 双重断言。动态 JSON、React fiber、浏览器 DOM 与协议帧使用有界契约；既有运行时校验保留。`@types/chrome` 锁定版本提供扩展 API 类型，`runtime-globals.d.ts` 描述各脚本实际暴露的全局对象，不引入运行时注册层。
 
 ## 真实调用链
 
 ```text
-content.js 观测帖子/显示答案
+src/content/content.ts 观测帖子/显示答案
   → feed-scheduler.ts 选择固定预加载窗口
   → ANALYZE / PROMOTE_REQUEST
-background.js 校验身份、读取缓存、安排共享队列
+src/background/worker.ts 校验身份、读取缓存、安排共享队列
   → provider-registry.ts 选择统一 ProviderAdapter
   → API / OAuth / Build / X native transport
   → 原始 Markdown + 来源/使用量元数据
-background.js 保存完整成功答案
+src/background/worker.ts 保存完整成功答案
   → answer-cache.ts 的 IndexedDB 事务与 LRU
-  → RESULT 回到 content.js 的安全 Markdown renderer
+  → RESULT 回到 content.ts 的安全 Markdown renderer
 ```
 
 | Owner | 责任 |
@@ -38,9 +41,9 @@ background.js 保存完整成功答案
 | `src/background/provider-registry.ts` | 四种 provider 的能力、并发、模型、错误映射和薄适配器 |
 | `src/background/answer-cache.ts` | 单条持久答案、原子容量计数、LRU、清空与迁移 |
 | `src/content/feed-scheduler.ts` | 几何候选过滤、去重、排序和固定窗口；没有 DOM/网络副作用 |
-| `extension/background.js` | 顶层 MV3 事件、凭据、请求准入、共享槽位、取消、重试及设置生命周期 |
-| `extension/content.js` | X DOM 观测、视口资格、原生面板协调与结果 UI |
-| `extension/*-provider.js` | 已有服务的认证或传输协议；registry 不复制它们的连接生命周期 |
+| `src/background/worker.ts` | 顶层 MV3 事件、凭据、请求准入、共享槽位、取消、重试及设置生命周期 |
+| `src/content/content.ts` | X DOM 观测、视口资格、原生面板协调与结果 UI |
+| `src/providers/` | 已有服务的认证或传输协议；registry 不复制它们的连接生命周期 |
 | `tests/` | 合成 provider/browser/storage fixtures，不调用真实付费服务 |
 
 同一分析在后台先按缓存语义、账号、凭据代、设置版本和缓存清空代合并，再异步读缓存。不同标签页共享排队、生成、重试与最终结果；取消一个订阅不取消其他订阅。已完成答案的后续读取等待同键缓存写入，避免落库前重复调用。只有尚未开始且离开可见／预加载窗口的自动任务会因滚动撤回；已开始分析的重试继续保留。X native 的来源文档失效时，必须等待旧连接真正结束，才能由存活订阅的页面续开。
@@ -95,6 +98,6 @@ KaTeX 使用公开 `renderToString`、MathML-only、`trust:false`、独立macros
 
 ### Native authentication wire adapter
 
-`extension/native-api-bridge.js` obtains credentials from the idle owned composer runtime and converts only the observed `grok.bearer` (also the omitted-protocol default) and `xai-x-user` formats into WebSocket subprotocols. It does not import webpack modules or search module exports. Unknown formats fail closed with `X_NATIVE_ADAPTER_CHANGED`; credentials, uid and auth subprotocols remain in MAIN-world memory. The gateway and runtime are private website contracts and can still change independently of bundle module IDs.
+`src/providers/native-api-bridge.ts` obtains credentials from the idle owned composer runtime and converts only the observed `grok.bearer` (also the omitted-protocol default) and `xai-x-user` formats into WebSocket subprotocols. It does not import webpack modules or search module exports. Unknown formats fail closed with `X_NATIVE_ADAPTER_CHANGED`; credentials, uid and auth subprotocols remain in MAIN-world memory. The gateway and runtime are private website contracts and can still change independently of bundle module IDs.
 
 User-visible changes must include a dated `CHANGELOG.md` entry with validation scope and any pending installed verification.

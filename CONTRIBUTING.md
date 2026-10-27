@@ -4,12 +4,13 @@ Thank you for helping improve SuperX. Keep changes focused on a concrete user be
 
 ## Local development
 
-Requirements: **Node.js 22 or newer**, plus desktop Chrome / Chromium Edge 120 or newer for browser checks. Install development dependencies with `npm ci`. The production core uses strict TypeScript with generated local JavaScript entries; existing UI and protocol modules are being migrated incrementally.
+Requirements: **Node.js 22 or newer**, plus desktop Chrome / Chromium Edge 120 or newer for browser checks. Install development dependencies with `npm ci`. All first-party extension runtime code uses strict TypeScript under `src/`; JavaScript under `extension/` is generated, except the two official Marked vendor bundles. Edit source and run `npm run build`; never patch generated files.
 
 ```sh
 npm ci
 npm run build
 npm run typecheck
+npm run format:check
 npm test
 npm run check
 node tools/preview-server.mjs
@@ -23,19 +24,21 @@ Load the `extension/` directory as an unpacked extension to check actual browser
 
 | Area | Responsibility |
 | --- | --- |
-| `src/` | Typed provider interfaces/adapters, persistent answer cache and pure lookahead scheduler; see [architecture](docs/ARCHITECTURE.md) |
-| `extension/background.js` | Credential storage, queues, shared request slots, cancellation and cache orchestration |
-| `extension/api-provider.js` | Request prompts, xAI Responses streaming, usage and failure handling |
-| `extension/feed-core.js` | Post extraction, displayed-language selection and shared normalization |
-| `extension/content.js`, `overlay-layout.js` | X integration, right-column layout and result UI |
-| `extension/markdown-renderer.js` | Restricted Markdown-to-DOM rendering |
-| `extension/options.*`, `popup.*`, `ui-i18n.js` | Configuration and localized extension UI |
-| `extension/history-store.js`, `history.*` | Local 24-hour post history, retention and its reading interface |
+| `src/` | All first-party runtime source, shared contracts and browser declarations; see [architecture](docs/ARCHITECTURE.md) |
+| `src/background/worker.ts` | Credential storage, queues, shared request slots, cancellation and cache orchestration |
+| `src/providers/api-provider.ts` | Request prompts, xAI Responses streaming, usage and failure handling |
+| `src/shared/feed-core.ts` | Post extraction, displayed-language selection and shared normalization |
+| `src/content/content.ts`, `overlay-layout.ts` | X integration, right-column layout and result UI |
+| `src/content/markdown-renderer.ts` | Restricted Markdown-to-DOM rendering |
+| `src/ui/` (scripts), `extension/*.html` / CSS (static UI) | Configuration and localized extension UI |
+| `src/background/history-store.ts`, `src/ui/history.ts` | Local 24-hour post history, retention and its reading interface |
 | `tests/`, `demo/`, `tools/` | Automated checks, previews and release helpers |
 
 The website is maintained separately and is not part of this repository or source releases. Some internal names retain GrokFirst identifiers for migration compatibility. Renaming a storage key, port or cached identity needs compatibility review rather than a broad textual replacement.
 
 ## Change requirements
+
+Every user-visible change needs a dated `CHANGELOG.md` entry with its verification scope. Runtime changes must be made in TypeScript. Keep `strict` and `noUncheckedIndexedAccess` enabled; do not introduce explicit `any`, type-check suppression comments or unchecked double assertions. The build checks every runtime script has a unique typed source owner and refuses generated drift.
 
 - Preserve X's left navigation, feed position, post height and theme behavior. Check that the right column does not add horizontal overflow.
 - Keep API Keys out of content scripts, model inputs, logs, screenshots, public issues and commits. Do not expand host access without a concrete reason.

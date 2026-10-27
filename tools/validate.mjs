@@ -11,6 +11,10 @@ const assets = new Set();
 
 function fail(message) { errors.push(message); }
 
+const formatting=spawnSync(process.execPath,['node_modules/prettier/bin/prettier.cjs','--check','src/**/*.ts','tools/build-extension.mjs','tsconfig.json'],{cwd:root,encoding:'utf8'});
+if(formatting.error||formatting.status!==0)fail(`TypeScript formatting failed: ${formatting.error?.message||formatting.stdout||formatting.stderr}`);
+else console.log('✓ TypeScript source formatting');
+
 const generated=spawnSync(process.execPath,['tools/build-extension.mjs','--check'],{cwd:root,encoding:'utf8'});
 if(generated.error||generated.status!==0)fail(`TypeScript/generated entries failed: ${generated.error?.message||generated.stdout||generated.stderr}`);
 else console.log('✓ Strict TypeScript and generated production entries');

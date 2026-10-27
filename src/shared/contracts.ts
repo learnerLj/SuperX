@@ -1,15 +1,8 @@
-/** The boundary between the JS lifecycle owners and the typed production core. */
+/** Shared contracts consumed by the worker, providers and reading UI. */
 export type ProviderId = "api" | "oauth" | "build" | "x-native";
 export type TaskKind = "analysis" | "comments" | "draft";
 export type ReasoningEffort =
-  | "auto"
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+  "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export interface Settings {
   provider: ProviderId;
   enabled: boolean;
@@ -98,13 +91,8 @@ export interface ResultMetadata {
 export interface AnalysisResult extends ResultMetadata {
   text: string;
   sources?: Source[];
-  verificationStatus?:
-    | "pending"
-    | "running"
-    | "completed"
-    | "unverified"
-    | "incomplete"
-    | "failed";
+  /** Private providers and older cache entries retain their reported status strings. */
+  verificationStatus?: string;
   verified?: boolean;
   searched?: boolean;
 }

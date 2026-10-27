@@ -1,0 +1,638 @@
+import type { CommentsResult } from "../shared/contracts";
+import type {
+  ProviderRoot,
+  ProviderError,
+  Post,
+  Settings,
+  AnalysisResult,
+  HostMessage,
+  Metadata,
+  Source,
+  Usage,
+  Update,
+} from "./types";
+import type { Result } from "./api-types";
+import type { RunRequest } from "./acp-types";
+import type {
+  BuildOptions,
+  BridgeContract,
+  SocketOptions,
+} from "./build-types";
+export type API = ReturnType<typeof buildProviderFactory>;
+function buildProviderFactory(root: ProviderRoot) {
+  "use strict";
+  const Core =
+    root.XGrokCore ||
+    (typeof require === "function" ? require("./feed-core.js") : null);
+  const API =
+    root.GrokFirstAPI ||
+    (typeof require === "function" ? require("./api-provider.js") : null);
+  const Transport =
+    root.SuperXBuildTransport ||
+    (typeof require === "function" ? require("./build-transport.js") : null);
+  const MAX_TEXT = 120000;
+  const ERROR_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+    BUILD_CONNECTION_REQUIRED:
+      "Connect the official local Grok service in Settings.",
+    BUILD_AUTH_FAILED:
+      "The local connection code does not match. Check Settings and the service window.",
+    BUILD_BUSY: "The local Grok service is busy. Wait for the current task.",
+    BUILD_CANCEL_UNCONFIRMED:
+      "The task may still be running. Press Ctrl+C in the official Grok service terminal to stop it.",
+    BUILD_PERMISSION_REQUIRED:
+      "Allow the local connection permission before connecting to Grok.",
+    BUILD_LOGIN_REQUIRED:
+      "Sign in to Grok Build locally before running this task.",
+    BUILD_UNAVAILABLE:
+      "Check that the official Grok service window is running and the local connection code matches.",
+    BUILD_VERSION_UNSUPPORTED:
+      "This official Grok version has not been confirmed compatible. Use the version listed in the connection guide.",
+    BUILD_CONFIG_UNSUPPORTED:
+      "The local Grok Build configuration is unsupported.",
+    BUILD_MODEL_UNSUPPORTED:
+      "The selected model is unavailable in Grok Build. Select an available model.",
+    BUILD_EFFORT_UNSUPPORTED:
+      "The selected reasoning effort is unavailable for this Grok Build model.",
+    BUILD_TOOL_POLICY:
+      "Grok Build could not apply the requested search-tool policy.",
+    BUILD_PROTOCOL_ERROR:
+      "The official local Grok service returned an invalid response.",
+    BUILD_DISCONNECTED:
+      "The connection to Grok Build ended before the task completed.",
+    BUILD_TIMEOUT: "Grok Build did not finish in time. You can retry manually.",
+    BUILD_OUTPUT_INVALID: "Grok Build did not return a complete reader answer.",
+    BUILD_LANGUAGE_MISMATCH:
+      "Grok Build did not follow the selected output language.",
+    BUILD_SEARCH_NOT_PERFORMED:
+      "Grok Build did not confirm the required search-tool use.",
+    BUILD_IMAGE_UNSUPPORTED:
+      "This local Grok service does not support image input. The images were not checked.",
+    BUILD_IMAGE_UNAVAILABLE:
+      "A context image could not be loaded safely. The images were not checked; try again.",
+    BUILD_IMAGE_LIMIT:
+      "The context images exceed the local connection limit. The images were not checked.",
+    BUILD_LIMIT:
+      "Grok Build has too many pending tasks. Try again after they finish.",
+    RATE_LIMIT: "Grok Build reached a usage limit. Try again later.",
+    CANCELED: "The Grok Build request was canceled.",
+    POST_INVALID: "Provide a valid original X post URL.",
+    DRAFT_INVALID: "Enter a draft of up to 30000 characters.",
+    URL_SEARCH_REQUIRED:
+      "Enable X search or web search to retrieve the full original post.",
+    COMMENTS_INVALID_RESPONSE:
+      "Grok Build did not return three valid comment drafts.",
+  });
+  function errorFor(code: string): ProviderError {
+    const error = new Error(
+      ERROR_MESSAGES[code] || ERROR_MESSAGES.BUILD_UNAVAILABLE,
+    ) as ProviderError;
+    (error as ProviderError).code = Object.hasOwn(
+      ERROR_MESSAGES,
+      code as string,
+    )
+      ? (code as string)
+      : "BUILD_UNAVAILABLE";
+    if ((error as ProviderError).code === "CANCELED")
+      (error as ProviderError).name = "AbortError";
+    return error;
+  }
+  function hostErrorCode(code: unknown): string {
+    if (
+      ["BUILD_CANCELLED", "BUILD_CANCELED", "CANCELLED", "CANCELED"].includes(
+        code as string,
+      )
+    )
+      return "CANCELED";
+    if (
+      [
+        "BUILD_QUOTA",
+        "BUILD_RATE_LIMIT",
+        "QUOTA_EXCEEDED",
+        "RATE_LIMIT",
+        "rate_limit_exceeded",
+      ].includes(code as string)
+    )
+      return "RATE_LIMIT";
+    if (code === "MEDIA_INPUT_LIMIT") return "BUILD_IMAGE_LIMIT";
+    return Object.hasOwn(ERROR_MESSAGES, code as string)
+      ? (code as string)
+      : "BUILD_UNAVAILABLE";
+  }
+  function publicError(error: unknown) {
+    const code = hostErrorCode((error as ProviderError)?.code);
+    return { code, error: ERROR_MESSAGES[code]! };
+  }
+  function aborted(signal?: AbortSignal) {
+    if (signal?.aborted) throw errorFor("CANCELED");
+  }
+  function metadata(
+    value: unknown,
+    stage: string,
+    previous: Metadata = { usage: {}, model: "", usageComplete: false },
+  ): Metadata {
+    const supplied = API.sanitizedUsage((value as Metadata)?.usage);
+    const usage = Object.keys(supplied).length ? supplied : previous.usage;
+    const model =
+      API.sanitizedModel((value as Metadata)?.model) || previous.model;
+    const complete =
+      typeof (value as Metadata)?.usageComplete === "boolean"
+        ? (value as Metadata).usageComplete
+        : previous.usageComplete;
+    return {
+      ...API.sanitizedMetadata({
+        usage,
+        model,
+        usageByStage: { [stage]: usage },
+        modelByStage: { [stage]: model },
+      }),
+      usageComplete: complete === true && API.usageComplete(usage),
+    };
+  }
+  function sourceList(value: unknown) {
+    // Share the API citation sanitizer. Only explicit host source metadata is
+    // admitted; links in generated prose do not establish retrieval or search.
+    return API.responseSources({
+      citations: Array.isArray(value)
+        ? (value as (string | import("./api-types").Annotation)[])
+        : [],
+    });
+  }
+  function readerText(message: HostMessage, { final = false } = {}) {
+    if (typeof message?.text !== "string" || message.text.length > MAX_TEXT) {
+      if (final) throw errorFor("BUILD_OUTPUT_INVALID");
+      return "";
+    }
+    if (
+      ["analysis", "reasoning", "commentary", "tool", "tool_call"].includes(
+        message.channel!,
+      ) ||
+      ["analysis", "reasoning", "commentary", "tool", "tool_call"].includes(
+        message.phase!,
+      )
+    )
+      return "";
+    return Core.readerOutput(message.text, { final }).text;
+  }
+  function checkLanguage(
+    text: string,
+    language: string,
+    streaming: boolean,
+    task: string,
+  ) {
+    try {
+      API.assertMatchingScript(text, language, streaming, task);
+    } catch (error) {
+      if ((error as ProviderError)?.code === "API_LANGUAGE_MISMATCH")
+        throw errorFor("BUILD_LANGUAGE_MISMATCH");
+      throw error;
+    }
+  }
+  function taskRequest(
+    post: Post,
+    settings: Settings,
+    task: "verify" | "comments",
+    analysis?: AnalysisResult,
+  ): RunRequest {
+    const request = API.buildRequest(
+      post,
+      {
+        ...settings,
+        provider: "api",
+        apiModel: settings.buildModel,
+        apiReasoningEffort: settings.buildReasoningEffort,
+      },
+      task,
+      analysis,
+    );
+    const text: string[] = [],
+      images: { url: string; label: string }[] = [];
+    for (const input of request.input) {
+      if (typeof input.content === "string") {
+        text.push(input.content);
+        continue;
+      }
+      if (!Array.isArray(input.content)) throw errorFor("BUILD_PROTOCOL_ERROR");
+      let imageLabel = "";
+      for (const part of input.content) {
+        if (part?.type === "input_text" && typeof part.text === "string") {
+          text.push(part.text);
+          imageLabel = part.text.length <= 1000 ? part.text : "";
+        } else if (
+          part?.type === "input_image" &&
+          typeof part.image_url === "string"
+        )
+          images.push({
+            url: part.image_url,
+            label: imageLabel || "Context image " + (images.length + 1),
+          });
+        else throw errorFor("BUILD_PROTOCOL_ERROR");
+      }
+    }
+    const prompt = request.instructions + "\n\n" + text.join("\n\n");
+    if (prompt.length > MAX_TEXT) throw errorFor("BUILD_OUTPUT_INVALID");
+    return {
+      type: "RUN",
+      task,
+      ...(post?.kind === "draft" && task === "verify"
+        ? { target: "draft" }
+        : {}),
+      transport: settings.buildTransport,
+      model: settings.buildModel,
+      effort: settings.buildReasoningEffort,
+      webSearch: task === "verify" && settings.webSearch,
+      xSearch: task === "verify" && settings.xSearch,
+      prompt,
+      ...(images.length ? { images } : {}),
+      ...(task === "comments"
+        ? { outputSchema: request.text!.format.schema }
+        : {}),
+    };
+  }
+  function normalizedSettings(settings: Settings, post: Post): Settings {
+    const normalized = Core.normalizeSettings(settings);
+    return {
+      ...normalized,
+      provider: "build",
+      language: API.resolveLanguage(
+        post?.kind === "draft" ? "auto" : normalized.language,
+        post?.kind === "draft" ? { text: post.text } : post,
+      ),
+    };
+  }
+  function failureFor(error: ProviderError) {
+    const codes: Record<string, string> = {
+      BUILD_TIMEOUT: "CONNECTION",
+      BUILD_DISCONNECTED: "CONNECTION",
+      BUILD_PROTOCOL_ERROR: "CONNECTION",
+      BUILD_OUTPUT_INVALID: "INCOMPLETE",
+      BUILD_LANGUAGE_MISMATCH: "LANGUAGE_MISMATCH",
+      RATE_LIMIT: "RATE_LIMIT",
+      BUILD_LOGIN_REQUIRED: "ACCESS",
+      BUILD_MODEL_UNSUPPORTED: "ACCESS",
+      BUILD_EFFORT_UNSUPPORTED: "ACCESS",
+      BUILD_SEARCH_NOT_PERFORMED: "INCOMPLETE",
+    };
+    return {
+      stage: "verify",
+      code: codes[(error as ProviderError).code] || "UNKNOWN",
+    };
+  }
+  async function runStage(
+    post: Post,
+    settings: Settings,
+    task: "verify" | "comments",
+    analysis: AnalysisResult | undefined,
+    {
+      signal,
+      onUpdate = () => {},
+      bridge,
+    }: BuildOptions & { bridge: BridgeContract },
+  ): Promise<Result> {
+    aborted(signal);
+    const request = taskRequest(post, settings, task, analysis);
+    let text = "",
+      sources: Source[] = [],
+      searched = false,
+      reported = metadata({}, task);
+    const ingest = (message: HostMessage, final = false) => {
+      reported = metadata(message, task, reported);
+      if (Array.isArray(message.sources)) sources = sourceList(message.sources);
+      // Search is an observed host event, never inferred from citations, the
+      // prompt or the configured search switches.
+      if (message.searched === true) searched = true;
+      if (Object.hasOwn(message, "text")) text = readerText(message, { final });
+      if (task === "verify" && text)
+        checkLanguage(text, settings.language, !final, task);
+    };
+    const publish = () =>
+      onUpdate({
+        text,
+        sources,
+        searched,
+        ...reported,
+        phase: task,
+        provider: "build",
+        verified: false,
+        apiVerification: "only",
+        verificationStatus: "running",
+        warning: "",
+      });
+    try {
+      const result = await bridge.request(request, {
+        signal,
+        onUpdate: (message) => {
+          ingest(message);
+          publish();
+        },
+      });
+      aborted(signal);
+      ingest(result, true);
+      if (
+        result.status != null &&
+        !["completed", "complete", "success"].includes(result.status)
+      )
+        throw errorFor("BUILD_OUTPUT_INVALID");
+      // A terminal empty/missing or tool-only snapshot is authoritative. Do
+      // not resurrect intermediate prose as a completed reader answer.
+      if (!Object.hasOwn(result, "text") || !text.trim()) {
+        text = "";
+        throw errorFor("BUILD_OUTPUT_INVALID");
+      }
+      return { text, sources, searched, ...reported };
+    } catch (caught) {
+      const error = errorFor(
+        (caught as ProviderError)?.code === "BUILD_CANCEL_UNCONFIRMED"
+          ? "BUILD_CANCEL_UNCONFIRMED"
+          : signal?.aborted
+            ? "CANCELED"
+            : hostErrorCode((caught as ProviderError)?.code),
+      );
+      reported = metadata(
+        (caught as ProviderError)?.nativeResponse || caught,
+        task,
+        reported,
+      );
+      Object.assign(error, reported);
+      const partial = Core.readerOutput(text, { final: true });
+      if (
+        task === "verify" &&
+        partial.kind === "content" &&
+        partial.text.trim() &&
+        !["CANCELED", "BUILD_LANGUAGE_MISMATCH"].includes(
+          (error as ProviderError).code,
+        )
+      ) {
+        (error as ProviderError).partialText = partial.text;
+        (error as ProviderError).partialSources = sources;
+        (error as ProviderError).partialSearched = searched;
+      }
+      throw error;
+    }
+  }
+  function resultFor(
+    stage: Result,
+    settings: Settings,
+    status: Result["verificationStatus"],
+    warning: string,
+  ): Result {
+    return {
+      ...stage,
+      provider: "build",
+      task: "verify",
+      verified: false,
+      apiVerification: "only",
+      verificationStatus: status,
+      warning,
+      completedAt: Date.now(),
+    };
+  }
+  async function runWithBridge(
+    post: Post,
+    input: Settings,
+    options: BuildOptions,
+    bridge: BridgeContract,
+  ) {
+    const { signal, onUpdate = () => {} } = options;
+    aborted(signal);
+    const settings = normalizedSettings(input, post),
+      labels = API.labels(settings);
+    // Validate before publishing or connecting to the local runtime.
+    taskRequest(post, settings, "verify");
+    onUpdate({
+      text: "",
+      sources: [],
+      searched: false,
+      phase: "verify",
+      provider: "build",
+      verified: false,
+      apiVerification: "only",
+      verificationStatus: "running",
+      warning: "",
+    });
+    try {
+      const result = await runStage(post, settings, "verify", undefined, {
+        signal,
+        onUpdate,
+        bridge,
+      });
+      return resultFor(
+        result,
+        settings,
+        result.searched ? "completed" : "unverified",
+        result.searched ? labels.completed! : labels.unverified!,
+      );
+    } catch (error) {
+      (error as ProviderError).verificationFailure = failureFor(
+        error as ProviderError,
+      );
+      if (
+        !(error as ProviderError).partialText ||
+        ["CANCELED", "BUILD_LANGUAGE_MISMATCH"].includes(
+          (error as ProviderError).code,
+        )
+      )
+        throw error;
+      try {
+        checkLanguage(
+          (error as ProviderError).partialText!,
+          settings.language,
+          false,
+          "verify",
+        );
+      } catch (languageError) {
+        Object.assign(languageError as object, API.sanitizedMetadata(error));
+        (languageError as ProviderError).verificationFailure = failureFor(
+          languageError as ProviderError,
+        );
+        throw languageError;
+      }
+      const partial = resultFor(
+        {
+          text: (error as ProviderError).partialText!,
+          sources: (error as ProviderError).partialSources,
+          searched: (error as ProviderError).partialSearched,
+          ...API.sanitizedMetadata(error),
+          usageComplete: (error as ProviderError).usageComplete === true,
+          verificationFailure: (error as ProviderError).verificationFailure,
+        },
+        settings,
+        "incomplete",
+        labels.incomplete!,
+      );
+      (error as ProviderError).partialResult = partial;
+      onUpdate(partial);
+      // Keep the failure visible to the caller. The worker may retain this
+      // actual partial answer, but must never cache it as a completed task.
+      throw error;
+    }
+  }
+  async function commentsWithBridge(
+    post: Post,
+    input: Settings,
+    { analysis, signal }: BuildOptions = {},
+    bridge: BridgeContract,
+  ): Promise<CommentsResult> {
+    aborted(signal);
+    const settings = normalizedSettings(input, post);
+    const result = await runStage(post, settings, "comments", analysis, {
+      signal,
+      bridge,
+    });
+    try {
+      const comments = API.parseComments(result.text);
+      for (const comment of comments)
+        checkLanguage(comment, settings.language, false, "comments");
+      return {
+        comments,
+        provider: "build",
+        task: "comments",
+        verified: false,
+        searched: false,
+        ...API.sanitizedMetadata(result),
+        usageComplete: result.usageComplete,
+        completedAt: Date.now(),
+      };
+    } catch (caught) {
+      const error = errorFor(hostErrorCode((caught as ProviderError)?.code));
+      Object.assign(error, API.sanitizedMetadata(result));
+      throw error;
+    }
+  }
+  function modelCatalog(value: unknown) {
+    if (!Array.isArray(value)) return undefined;
+    return (
+      value as (
+        | string
+        | {
+            id?: unknown;
+            value?: unknown;
+            model?: unknown;
+            efforts?: unknown;
+            available?: unknown;
+          }
+      )[]
+    )
+      .slice(0, 100)
+      .flatMap((entry) => {
+        const id = API.sanitizedModel(
+          typeof entry === "string"
+            ? entry
+            : entry?.id || entry?.value || entry?.model,
+        );
+        if (!id) return [];
+        if (typeof entry === "string") return [{ id }];
+        const efforts = Array.isArray(entry.efforts)
+          ? (entry.efforts as unknown[]).filter((effort): effort is string =>
+              ["none", "minimal", "low", "medium", "high", "xhigh"].includes(
+                effort as string,
+              ),
+            )
+          : undefined;
+        return [
+          {
+            id,
+            ...(typeof entry.available === "boolean"
+              ? { available: entry.available }
+              : {}),
+            ...(efforts ? { efforts: [...new Set(efforts)] } : {}),
+          },
+        ];
+      });
+  }
+  async function statusWithBridge(bridge: BridgeContract) {
+    try {
+      const result = await bridge.request({ type: "STATUS" });
+      const catalog = modelCatalog(result.modelCatalog);
+      return {
+        connected: result.connected === true,
+        permission: "granted",
+        installed: result.installed === true,
+        available: result.available === true,
+        ...(typeof result.imageInputSupported === "boolean"
+          ? { imageInputSupported: result.imageInputSupported }
+          : {}),
+        ...(typeof result.authenticated === "boolean"
+          ? { authenticated: result.authenticated }
+          : {}),
+        ...(typeof result.version === "string" &&
+        /^[A-Za-z0-9.+_-]{1,80}$/.test(result.version)
+          ? { version: result.version }
+          : {}),
+        ...(catalog ? { modelCatalog: catalog } : {}),
+        ...(result.errorCode
+          ? { errorCode: hostErrorCode(result.errorCode) }
+          : {}),
+      };
+    } catch (error) {
+      const code = hostErrorCode((error as ProviderError)?.code),
+        connected = bridge.connected === true;
+      return {
+        connected,
+        permission: connected
+          ? "granted"
+          : code === "BUILD_PERMISSION_REQUIRED"
+            ? "denied"
+            : "unknown",
+        installed: connected,
+        available: false,
+        ...(code === "BUILD_LOGIN_REQUIRED" ? { authenticated: false } : {}),
+        errorCode: code,
+      };
+    }
+  }
+  const provider = {
+    run: (post: Post, settings: Settings, options: BuildOptions = {}) =>
+      runWithBridge(
+        post,
+        settings,
+        options,
+        Transport.bridgeFor(options.connection, options.webSocketFactory),
+      ),
+    generateComments: (
+      post: Post,
+      settings: Settings,
+      options: BuildOptions = {},
+    ) =>
+      commentsWithBridge(
+        post,
+        settings,
+        options,
+        Transport.bridgeFor(options.connection, options.webSocketFactory),
+      ),
+    async status(options: BuildOptions = {}) {
+      try {
+        return await statusWithBridge(
+          Transport.bridgeFor(options.connection, options.webSocketFactory),
+        );
+      } catch (error) {
+        return {
+          connected: false,
+          installed: false,
+          available: false,
+          errorCode: hostErrorCode((error as ProviderError)?.code),
+        };
+      }
+    },
+    publicError,
+    close: () => Transport.closeAll(),
+    create: ({ connection, ...options }: BuildOptions = {}) => {
+      const bridge = new Transport.Bridge(connection, options);
+      return {
+        run: (post: Post, settings: Settings, opts: BuildOptions = {}) =>
+          runWithBridge(post, settings, opts, bridge),
+        generateComments: (
+          post: Post,
+          settings: Settings,
+          opts: BuildOptions = {},
+        ) => commentsWithBridge(post, settings, opts, bridge),
+        status: () => statusWithBridge(bridge),
+        close: () => bridge.close(),
+        publicError,
+      };
+    },
+  };
+  root.SuperXBuild = provider;
+  if (typeof module !== "undefined") module.exports = provider;
+  return provider;
+}
+buildProviderFactory(globalThis as typeof globalThis & ProviderRoot);

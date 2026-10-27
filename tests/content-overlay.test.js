@@ -4147,3 +4147,14 @@ test('resizing with an idle worker keeps the chosen width across wake CONFIG and
  const handle=page.nodes.find(n=>n.className==='rail-resize'),rail=page.nodes.find(n=>n.className==='rail');handle.emit('keydown',resizeEvent({key:'ArrowRight'}));page.flush();assert.equal(rail.style.width,'366px');assert.equal(page.port.sent.some(m=>m.type==='SET_RAIL_WIDTH'),false);
  page.configure();page.flush();assert.equal(rail.style.width,'366px');assert.deepEqual(page.port.sent.filter(m=>m.type==='SET_RAIL_WIDTH').map(m=>m.width),[366]);assert.equal(analyzeMessages(page).length,0);assert.equal(card.testShadow.querySelector('.answer').textContent,'A completed explanation.');
 });
+
+test('draft input listeners ignore Document and Text targets without closest methods',()=>{
+  const {JSDOM}=require('jsdom'),dom=new JSDOM('<!doctype html><body><div>text</div></body>',{url:'https://x.com/home'});
+  const errors=[];dom.window.addEventListener('error',event=>{errors.push(event.error);event.preventDefault();});
+  const controller=require('../extension/draft-composer.js').create({document:dom.window.document,core,t:key=>key});
+  try {
+    dom.window.document.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
+    dom.window.document.querySelector('div').firstChild.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
+    assert.deepEqual(errors,[]);
+  } finally {controller.destroy();dom.window.close();}
+});

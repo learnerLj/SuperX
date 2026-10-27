@@ -21,16 +21,20 @@
     "package:source": "node tools/package-source.mjs",
     "build": "node tools/build-extension.mjs",
     "typecheck": "tsc --noEmit",
-    "pretest": "node tools/build-extension.mjs --check"
+    "pretest": "node tools/build-extension.mjs --check",
+    "format": "prettier --write \"src/**/*.ts\" tools/build-extension.mjs tsconfig.json",
+    "format:check": "prettier --check \"src/**/*.ts\" tools/build-extension.mjs tsconfig.json"
   },
   "engines": {
     "node": ">=22"
   },
   "devDependencies": {
+    "@types/chrome": "0.3.6",
     "esbuild": "0.25.12",
     "fake-indexeddb": "^6.2.6",
     "jsdom": "26.1.0",
     "katex": "0.19.1",
+    "prettier": "3.9.10",
     "typescript": "5.9.3"
   }
 }
