@@ -1,5 +1,9 @@
 # Changelog
 
+## User-facing README — 2026-10-28
+
+- Simplify both language READMEs to features, installation, everyday use and upstream acknowledgements. Keep connection and developer details in their existing guides; remove obsolete release/store status and historical implementation details from the landing page.
+
 ## Source-only Git checkout — 2026-10-28
 
 - Stop tracking all 27 generated first-party `extension/*.js` files in Git; retain their local copies for the installed extension. TypeScript under `src/` is the only maintained runtime implementation. Keep official vendor distributions and static extension assets tracked.
