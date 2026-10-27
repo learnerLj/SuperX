@@ -7,12 +7,12 @@
   // request after upgrading to the API-only release.
   if (workerNonce) return;
 
-  const Core = XGrokCore, Layout = GrokFirstOverlayLayout, UI = GrokFirstUI;
+  const Core = XGrokCore, Layout = GrokFirstOverlayLayout, UI = GrokFirstUI, Scheduler = SuperXFeedScheduler;
   const nativePanel=SuperXNativePanel.create({document,window,send:message=>post(message)});
   let xUILanguage = UI.normalizeLanguage(document.documentElement.getAttribute('lang') || navigator.language || 'en');
   let uiLanguage = UI.resolveLanguage('auto',xUILanguage);
   const t = (key, vars) => UI.t(key, uiLanguage, vars);
-  let settings = Core.DEFAULT_SETTINGS, providerReady = false, connected = false, port, used = 0, collapsed = false;
+  let settings = Core.DEFAULT_SETTINGS, providerReady = false, answerCacheReady = false, connected = false, port, used = 0, collapsed = false;
   let lastPath = location.pathname, scanTimer, reconnectTimer, handshakeTimer, dwellTimer, dwellDeadline=0, needsPageRefresh = false;
   let hasConfig=false,workerSleeping=false,awaitingConfig=false,reconnectFailures=0,xModalBlocked=false,pageSuspended=false;
   let oauthState={},credentialIdentity='',taskRevision;
@@ -202,7 +202,7 @@
   function wakeKey(entry,task){return entry.post.id+':'+task;}
   function afterWake(entry,task,action) {
     if(!workerSleeping&&!awaitingConfig)return false;
-    if(!providerReady||needsPageRefresh)return false;
+    if(!(providerReady||(task==='analysis'&&answerCacheReady))||needsPageRefresh)return false;
     const key=wakeKey(entry,task),identity=Core.apiPostIdentity(entry.post,task==='comments'?undefined:settings),path=location.pathname;
     if(!wakeActions.has(key))wakeActions.set(key,()=>{
       if(entries.get(entry.article)!==entry||path!==location.pathname||
@@ -380,6 +380,29 @@
     return ({RATE_LIMIT:'status.rateLimited',NEEDS_KEY:'status.needsKey',KEY_MIGRATION_REQUIRED:'status.needsKey',
       CANCELLED:'status.cancelled',RAIL_COLLAPSED:'status.disabled',URL_SEARCH_REQUIRED:'error.urlSearchRequired',API_LANGUAGE_MISMATCH:'error.outputLanguageMismatch'})[code]||'status.failed';
   }
+  let nativeAccountIdentity = null;
+  function currentNativeAccount() {
+    const href=document.querySelector('a[data-testid="AppTabBar_Profile_Link"]')?.href||'';
+    const account=Core.normalizeNativeAccount(href);
+    return account?'https://x.com/'+account:'';
+  }
+  function syncNativeAccount() {
+    if(settings.provider!=='x-native'){nativeAccountIdentity=null;return;}
+    const account=currentNativeAccount();
+    if(account===nativeAccountIdentity)return;
+    const changed=nativeAccountIdentity!==null;
+    nativeAccountIdentity=account;
+    if(connected)post({type:'NATIVE_ACCOUNT_CHANGED',nativeAccount:account});
+    if(!changed)return;
+    if(connected)post({type:'CANCEL_ALL'});
+    queue.clear();requests.clear();wakeActions.clear();
+    for(const entry of allEntries()) {
+      clearRetries(entry);entry.status='new';entry.pending=false;entry.since=0;entry.result=null;entry.cached=false;
+      entry.analysisUsage=null;entry.requestDiagnostics=undefined;setVerificationFailure(entry,null,false);
+      renderAnswer(entry,'',true);renderSources(entry,[]);note(entry,'');entry.ui.retry.hidden=true;
+      entry.commentStatus='idle';entry.comments=[];entry.commentUsage=null;refreshComments(entry);
+    }
+  }
   function requestSnapshot(entry,requestId,task='analysis') {
     return {requestId,task,entry,postSnapshot:entry.post,apiIdentity:Core.apiPostIdentity(entry.post,task==='comments'?undefined:settings),path:location.pathname,provider:settings.provider,
       language:settings.language,apiModel:settings.provider==='oauth'?settings.oauthModel:settings.provider==='build'?settings.buildModel:settings.apiModel,
@@ -409,10 +432,13 @@
   function setCollapsed(value,persist=false) {
     collapsed=Boolean(value);
     if(collapsed) {
-      cancelDwellTimer();
-      queue.clear();
+      cancelDwellTimer();queue.clear();
       for(const entry of allEntries()){entry.pending=false;entry.since=0;}
       for(const [id,request] of requests)if(request.task==='comments'?['queued','retry-wait'].includes(request.entry.commentStatus):['queued','retry-wait'].includes(request.entry.status)) {
+        if(request.originatedPrefetch) {
+          if(!request.railCancellation){request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,preserveStarted:true});}
+          continue;
+        }
         post({type:'CANCEL',requestId:id});requests.delete(id);
         if(request.task==='comments'){request.entry.commentRetry=null;request.entry.commentStatus='error';request.entry.commentError='status.disabled';refreshComments(request.entry);}
         else {request.entry.analysisRetry=null;request.entry.status='new';refreshCard(request.entry);}
@@ -438,7 +464,14 @@
     } catch(error){connectionLost(error);}
   }
   function handleMessage(message) {
-    if(message.type==='NATIVE_RUN'){nativePanel.run(message);return;}
+    if(message.type!=='CONFIG')syncNativeAccount();
+    if(message.type==='NATIVE_RUN'){
+      if(typeof message.nativeAccount==='string'&&message.nativeAccount!==Core.normalizeNativeAccount(currentNativeAccount())) {
+        post({type:'NATIVE_EVENT',nonce:message.nonce,kind:'ERROR',code:'X_NATIVE_INTERRUPTED'});
+        post({type:'NATIVE_EVENT',nonce:message.nonce,kind:'CLOSED'});return;
+      }
+      nativePanel.run(message);return;
+    }
     if(message.type==='NATIVE_CANCEL'){nativePanel.cancel(message.nonce);return;}
     if(message.type==='NATIVE_PING')return;
     if(message.type==='HISTORY_CONFIG') {configureHistory(message.enabled,message.epoch);return;}
@@ -458,7 +491,7 @@
       // controls; accepted jobs and visible answers retain their task snapshot.
       // An archived explanation draft can survive upgrades, but never changes
       // current fact-check jobs or their visible results.
-      for(const field of ['explainPrompt','verifyPrompt','draftPrompt','postDraftPrompt','replyDraftPrompt','commentsPrompt','interfaceLanguage','dwellMs','analysisDefaultsVersion','oauthRemember']){delete previousOptions[field];delete nextOptions[field];}
+      for(const field of ['explainPrompt','verifyPrompt','draftPrompt','postDraftPrompt','replyDraftPrompt','commentsPrompt','interfaceLanguage','dwellMs','analysisDefaultsVersion','oauthRemember','answerCacheLimitMB','prefetchCount','prefetchAll']){delete previousOptions[field];delete nextOptions[field];}
       // A waking worker can report OAuth restoration before decrypting the
       // saved identity. Unknown is not a new account: keep retained results
       // terminal until an authoritative identity arrives, with calls blocked.
@@ -475,7 +508,7 @@
       taskRevision=Number.isSafeInteger(message.taskRevision)?message.taskRevision:undefined;
       if(dwellChanged)resetDwellWaits();
       configureHistory(message.historyEnabled,message.historyEpoch);
-      providerReady=Boolean(message.ready)&&!pendingOAuthIdentity;used=message.used || 0;
+      providerReady=Boolean(message.ready)&&!pendingOAuthIdentity;answerCacheReady=message.answerCacheReady===true&&!pendingOAuthIdentity;used=message.used || 0;
       nativeErrorCode=message.nativeStatus?.errorCode||'';
       buildErrorCode=typeof message.buildStatus?.errorCode==='string'?message.buildStatus.errorCode:'';
       syncUILanguage();
@@ -518,7 +551,7 @@
       // so a waking feed cannot bill for an obsolete answer language.
       if(awaitingConfig){railLanguage.disabled=true;handshakeTimer=setTimeout(()=>connectionLost(new Error('Language configuration timed out')),8000);return;}
       const actions=[...wakeActions.values()];wakeActions.clear();
-      if(providerReady)for(const action of actions){if(!connected||awaitingConfig)break;action();}
+      if(providerReady||answerCacheReady)for(const action of actions){if(!connected||awaitingConfig)break;action();}
       for(const entry of allEntries())refreshCard(entry);
       scheduleScan();return;
     }
@@ -536,6 +569,7 @@
     const request=requests.get(message.requestId);
     if(!request) return;
     const {entry}=request;
+    if(request.task==='analysis')entry.analysisVersion=(entry.analysisVersion||0)+1;
     const unchanged=Core.apiPostIdentity(entry.post,request.task==='comments'?undefined:settings)===request.apiIdentity;
     if(!unchanged || request.path!==lastPath || request.path!==location.pathname&&!hasBlockingXModal()){finishRequest(message);return;}
     if(request.railCancellation&&['ERROR','COMMENT_ERROR'].includes(message.type)&&message.code==='CANCELLED') {
@@ -647,7 +681,7 @@
       if(isAccountLimit(entry.verificationFailure))note(entry,'note.accountLimit');
       finishRequest(message);
     }
-    refreshCard(entry);scheduleLayout();
+    syncSharedAnalyses();refreshCard(entry);scheduleLayout();
     if(['RESULT','ERROR'].includes(message.type))tick();
   }
   // API launch spacing belongs to the shared background scheduler; this page
@@ -907,14 +941,15 @@
     cancelDwellTimer();queue.clear();
     for(const entry of allEntries()){entry.pending=false;entry.since=0;}
     for(const [id,request] of requests)if(request.task==='comments'?['queued','retry-wait'].includes(request.entry.commentStatus):['queued','retry-wait'].includes(request.entry.status)) {
-      if(request.railCancellation||preserveStarted&&request.started)continue;
+      if(request.railCancellation||(preserveStarted||request.originatedPrefetch)&&request.started)continue;
       request.railCancellation=true;
       // Leave the request attached until cancellation is acknowledged. It may
       // already be running while the START message is still crossing the port.
-      post({type:'CANCEL_IF_QUEUED',requestId:id,...(preserveStarted?{preserveStarted:true}:{})});
+      post({type:'CANCEL_IF_QUEUED',requestId:id,...(preserveStarted||request.originatedPrefetch?{preserveStarted:true}:{})});
     }
   }
   function positionCards() {
+    syncNativeAccount();
     const blocked=syncXModalVisibility();
     overlay.hidden=document.hidden || !settings.enabled || !supportedPage()||blocked;
     if(overlay.hidden){
@@ -993,7 +1028,8 @@
     // subscription and its concurrency lease intact if work has already begun.
     for(const [id,request] of requests)if(request.entry===entry&&
         (request.task==='comments'?['queued','retry-wait'].includes(entry.commentStatus):['queued','retry-wait'].includes(entry.status))&&!request.railCancellation){
-      request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id});
+      if(queuedEntryEligible(entry,lookaheadWindow(),request.prefetch))continue;
+      request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.originatedPrefetch?{preserveStarted:true}:{})});
     }
     pruneDetachedEntries();
   }
@@ -1073,24 +1109,75 @@
   function eligibility(article) {
     return Core.visibilityEligibility(article.getBoundingClientRect(),{width:innerWidth,height:innerHeight},{minRatio:0,minVisiblePx:1});
   }
+  function lookaheadWindow() {
+    const viewport={width:innerWidth,height:innerHeight},rows=[];
+    const displayedIds=new Set([...entries.values()].filter(entry=>entry.article.isConnected&&eligibility(entry.article).eligible).map(entry=>entry.post.id));
+    for(const entry of entries.values()) {
+      if(!entry.article.isConnected)continue;
+      const rect=entry.article.getBoundingClientRect();
+      rows.push({entry,id:entry.post.id,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,
+        visible:displayedIds.has(entry.post.id),isPromoted:Boolean(entry.post.isPromoted)});
+    }
+    const ids=Scheduler.selectLookahead(rows,viewport,{count:settings.prefetchCount,all:settings.prefetchAll});
+    const selected=new Set();
+    for(const id of ids) {
+      const row=rows.filter(row=>row.id===id&&!row.visible&&!row.isPromoted&&row.top>=viewport.height&&row.bottom>row.top&&row.right>0&&row.left<viewport.width).sort((a,b)=>a.top-b.top)[0];
+      if(row)selected.add(row.entry);
+    }
+    return selected;
+  }
+  function analysisIdentity(entry) {
+    const mode=Core.explanationMode(settings);
+    return JSON.stringify([location.pathname,taskRevision,nativeAccountIdentity,credentialIdentity,settings.provider,
+      Core.apiPostIdentity(entry.post,settings),mode,mode==='preset'?Core.DEFAULT_PROMPTS.verify:settings.verifyPrompt]);
+  }
+  function analysisEntries(leader) {return [leader,...[...entries.values()].filter(entry=>entry.analysisLeader===leader)];}
+  function mirrorAnalysis(entry,leader) {
+    if(entry.sharedVersion===leader.analysisVersion)return;
+    entry.sharedVersion=leader.analysisVersion;
+    for(const field of ['status','phase','result','errorCode','verificationStart','verificationBase','verificationStarted','analysisRetry','keepRetryAnswer','verificationFailure','analysisUsage','requestDiagnostics'])entry[field]=leader[field];
+    entry.cached=leader.status==='done'||leader.cached;
+    if(entry.analysisUsage&&leader.status==='done')entry.analysisUsage={...entry.analysisUsage,cached:true};
+    renderAnswer(entry,leader.latestText||'',true);renderSources(entry,leader.sourceList||[]);
+    if(leader.statusKey)status(entry,leader.statusKey,leader.statusVars);note(entry,leader.noteKey||'');refreshCard(entry);
+  }
+  function reuseAnalysis(entry,activeOnly=false) {
+    const key=analysisIdentity(entry),active=[...requests.values()].find(request=>request.task==='analysis'&&request.analysisKey===key);
+    if(active?.entry===entry){delete entry.analysisLeader;return false;}
+    let leader=active?.entry;
+    if(!activeOnly&&!leader&&entry.analysisLeader&&allEntries().includes(entry.analysisLeader)&&entry.analysisLeader.analysisKey===key&&entry.analysisLeader.status==='done')leader=entry.analysisLeader;
+    if(!activeOnly&&!leader&&entry.status==='new')leader=allEntries().find(other=>other!==entry&&other.analysisKey===key&&other.status==='done'&&other.result);
+    if(!leader){
+      if(entry.analysisLeader){delete entry.analysisLeader;entry.sharedVersion=undefined;if(['queued','running','retry-wait'].includes(entry.status)){entry.status='new';entry.pending=false;}}
+      return false;
+    }
+    if(entry.analysisLeader!==leader){entry.analysisLeader=leader;entry.sharedVersion=-1;}
+    entry.analysisKey=key;mirrorAnalysis(entry,leader);return true;
+  }
+  function syncSharedAnalyses() {for(const entry of entries.values())reuseAnalysis(entry);}
+  function queuedEntryEligible(entry,lookahead,prefetch=false) {
+    return analysisEntries(entry).some(candidate=>candidate.article.isConnected&&entries.get(candidate.article)===candidate&&
+      (eligibility(candidate.article).eligible||prefetch&&lookahead.has(candidate)));
+  }
   function onFeedScroll(event) {
     const target=event?.target;
     // Captured scrolls include X's nested feed containers. A scroll within our
     // shadow rail is only reading the answer, so it must not postpone a post.
     const owned=target===overlay||event?.composedPath?.().includes(overlay)||Boolean(target?.nodeType&&overlay.contains(target));
     if(!owned&&settings.dwellMs>0){
-      cancelDwellTimer();queue.clear();const now=Date.now();
+      cancelDwellTimer();queue.clear();const now=Date.now(),lookahead=lookaheadWindow();
       for(const entry of allEntries())if(entry.status==='new'){
         entry.pending=false;
         entry.since=entry.article.isConnected&&visible.has(entry.article)&&eligibility(entry.article).eligible?now:0;
       }
       for(const [id,request] of requests)if(request.task==='analysis'&&['queued','retry-wait'].includes(request.entry.status)&&!request.force){
+        if(request.prefetch&&queuedEntryEligible(request.entry,lookahead,true))continue;
         request.scrollCancellation=true;
         const entry=request.entry;
         entry.since=entry.article.isConnected&&visible.has(entry.article)&&eligibility(entry.article).eligible?now:0;
         // A START can already be crossing the port. Keep this subscription
         // attached and ask the worker to cancel only if it truly has not begun.
-        if(!request.railCancellation){request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id});}
+        if(!request.railCancellation){request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.originatedPrefetch?{preserveStarted:true}:{})});}
       }
     }
     scheduleLayout();
@@ -1113,10 +1200,11 @@
   }
   function tick() {
     if(pageSuspended){resetDwellWaits();return;}
+    syncNativeAccount();
     const blocked=syncXModalVisibility();
     recordHistory();
     if(blocked){pauseUnseenRailQueue();return;}
-    if(document.hidden || collapsed || !settings.enabled || !providerReady || !supportedPage()){resetDwellWaits();return;}
+    if(document.hidden || collapsed || !settings.enabled || !(providerReady||answerCacheReady) || !supportedPage()){resetDwellWaits();return;}
     if(currentRailBounds().hidden){pauseUnseenRailQueue();return;}
     if(location.pathname!==lastPath){scheduleScan();return;}
     if(!connected){
@@ -1128,13 +1216,18 @@
     }
     if(awaitingConfig){resetDwellWaits();return;}
     const now=Date.now();let nextDwell=0;
+    syncSharedAnalyses();
+    const lookahead=lookaheadWindow();
+    for(const [id,request] of requests)if(request.prefetch&&analysisEntries(request.entry).some(entry=>entry.article.isConnected&&eligibility(entry.article).eligible)) {
+      request.prefetch=false;post({type:'PROMOTE_REQUEST',requestId:id});
+    }
     // Scrolling does not abandon a running paid request. Only withdraw work
     // that the worker confirms has not begun; retain its subscription meanwhile.
     for(const [id,request] of requests) {
       const entry=request.entry,queued=request.task==='comments'?['queued','retry-wait'].includes(entry.commentStatus):['queued','retry-wait'].includes(entry.status);
       if(!queued||request.railCancellation)continue;
-      if(entries.get(entry.article)!==entry||!eligibility(entry.article).eligible){
-        entry.since=0;request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id});
+      if(!queuedEntryEligible(entry,lookahead,request.task==='analysis'&&request.prefetch)){
+        entry.since=0;request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.originatedPrefetch?{preserveStarted:true}:{})});
       }
     }
     for(const article of visible) {
@@ -1154,6 +1247,7 @@
       if(!eligibility(entry.article).eligible){entry.pending=false;refreshCard(entry);continue;}
       submit(entry,false);
     }
+    for(const entry of lookahead)if(entry.status==='new')submit(entry,false,true);
     scheduleDwell(nextDwell);
   }
   function configureHistory(enabled,epoch) {
@@ -1183,22 +1277,24 @@
       if(!post({type:'HISTORY_VISIT',posts,historyEpoch,batchId})){historyPending.delete(batchId);for(const id of ids)historySeen.delete(id);historyRetryAt=Date.now()+5000;return;}
     }
   }
-  function submit(entry,force) {
+  function submit(entry,force,prefetch=false) {
     if(force&&afterWake(entry,'analysis',()=>submit(entry,true)))return;
-    if(!settings.enabled||!connected||!providerReady||currentRailBounds().hidden)return;
+    if(!settings.enabled||!connected||!(providerReady||(!force&&answerCacheReady))||currentRailBounds().hidden)return;
     if(awaitingConfig)return;
     if([...requests.values()].some(r=>r.entry===entry&&r.task==='analysis'))return;
+    if(reuseAnalysis(entry,force))return;
     if(force&&!clearComments(entry))return;
     // Cancelling a comment can synchronously invalidate the shared port.
-    if(!connected||!providerReady)return;
+    if(!connected||!(providerReady||(!force&&answerCacheReady)))return;
+    delete entry.analysisLeader;entry.sharedVersion=undefined;entry.analysisKey=analysisIdentity(entry);entry.analysisVersion=(entry.analysisVersion||0)+1;
     entry.analysisRetry=null;entry.keepRetryAnswer=false;
     const requestId=crypto.randomUUID();
     entry.pending=false;entry.since=0;queue.remove(entry.post.id);entry.status='queued';entry.phase='';entry.verificationBase='';entry.verificationStarted=false;entry.verificationStart=undefined;entry.result=null;entry.cached=false;entry.requestDiagnostics=undefined;setVerificationFailure(entry,null,false);status(entry,'status.queued');entry.ui.retry.hidden=true;
     if(force||!entry.ui.answer.textContent)renderAnswer(entry,'',true);
     renderSources(entry,[]);note(entry,'');entry.ui.diagnostics.hidden=true;entry.ui.diagnosticText.textContent='';
-    requests.set(requestId,{...requestSnapshot(entry,requestId),force:force===true});
+    requests.set(requestId,{...requestSnapshot(entry,requestId),force:force===true,prefetch,originatedPrefetch:prefetch,analysisKey:entry.analysisKey});
     entry.analysisUsage=null;captureUsage(entry,'analysis',{},requests.get(requestId),false,true);refreshUsage(entry);
-    post({type:'ANALYZE',requestId,post:entry.post,force});scheduleLayout();
+    post({type:'ANALYZE',requestId,post:entry.post,force,prefetch,nativeAccount:currentNativeAccount()});scheduleLayout();
   }
   function clearComments(entry) {
     for(const [id,request] of requests)if(request.entry===entry&&request.task==='comments'){

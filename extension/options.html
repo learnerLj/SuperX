@@ -188,6 +188,12 @@
             <input id="analysis-dwell" type="number" min="0" max="30" step="any" value="1" required aria-describedby="analysis-dwell-help">
             <p id="analysis-dwell-help" class="help" data-i18n="options.dwellHelp">After scrolling stops, posts must stay visible for this long before automatic analysis. Default: 1 second; 0 starts immediately. Manual actions do not wait.</p>
           </div>
+          <div class="field">
+            <label for="prefetch-count" data-i18n="options.prefetchCount">Posts to preload below the viewport</label>
+            <input id="prefetch-count" type="number" min="0" max="100" step="1" value="5" required aria-describedby="prefetch-help">
+            <label class="checkbox-label"><input id="prefetch-all" type="checkbox" aria-describedby="prefetch-help"><span data-i18n="options.prefetchAll">Preload all posts already loaded on this page</span></label>
+            <p id="prefetch-help" class="help" data-i18n="options.prefetchHelp">Default: 5; 0 turns preloading off. Visible posts have priority. Preloading uses the selected provider allowance; cached answers are reused. All covers posts X has already loaded, without automatic scrolling.</p>
+          </div>
           <div id="search-options" class="shared-search" role="group" aria-describedby="verification-help search-status">
             <p id="verification-help" class="help" data-i18n="options.verificationHelp">Fact checks read the full linked post. Search tool calls may add cost.</p>
             <div class="checkbox-row">
@@ -272,6 +278,11 @@
           <details id="maintenance">
             <summary id="maintenance-heading" data-i18n="options.maintenance">Maintenance &amp; troubleshooting</summary>
             <div class="maintenance-content">
+        <div class="field">
+          <label for="answer-cache-limit" data-i18n="options.cacheLimit">Answer cache limit (MB)</label>
+          <input id="answer-cache-limit" type="number" min="1" max="1048576" step="1" value="1024" required aria-describedby="answer-cache-limit-help">
+          <p id="answer-cache-limit-help" class="help" data-i18n="options.cacheLimitHelp">Default: 1024 MB (1 GB). Answers do not expire. Least recently used answers are removed when the limit is reached. Save to apply.</p>
+        </div>
         <div class="maintenance-action compact-section" aria-labelledby="cache-heading">
           <div>
             <h3 id="cache-heading" data-i18n="options.answerCache">Clear answer cache</h3>

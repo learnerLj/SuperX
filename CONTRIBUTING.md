@@ -4,10 +4,14 @@ Thank you for helping improve SuperX. Keep changes focused on a concrete user be
 
 ## Local development
 
-Requirements: **Node.js 22 or newer**, plus desktop Chrome / Chromium Edge 120 or newer for browser checks. The extension, tests and preview use plain JavaScript and need no dependency installation.
+Requirements: **Node.js 22 or newer**, plus desktop Chrome / Chromium Edge 120 or newer for browser checks. Install development dependencies with `npm ci`. The production core uses strict TypeScript with generated local JavaScript entries; existing UI and protocol modules are being migrated incrementally.
 
 ```sh
-node tools/validate.mjs
+npm ci
+npm run build
+npm run typecheck
+npm test
+npm run check
 node tools/preview-server.mjs
 ```
 
@@ -19,7 +23,8 @@ Load the `extension/` directory as an unpacked extension to check actual browser
 
 | Area | Responsibility |
 | --- | --- |
-| `extension/background.js` | Credential storage, queues, shared request slots, cancellation and cache |
+| `src/` | Typed provider interfaces/adapters, persistent answer cache and pure lookahead scheduler; see [architecture](docs/ARCHITECTURE.md) |
+| `extension/background.js` | Credential storage, queues, shared request slots, cancellation and cache orchestration |
 | `extension/api-provider.js` | Request prompts, xAI Responses streaming, usage and failure handling |
 | `extension/feed-core.js` | Post extraction, displayed-language selection and shared normalization |
 | `extension/content.js`, `overlay-layout.js` | X integration, right-column layout and result UI |

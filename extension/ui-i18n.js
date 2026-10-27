@@ -2083,6 +2083,121 @@
     ]
 });
   section(["native.busy","native.cleanup"], {"en": ["Your Grok panel is open. Collapse it, then retry.", "Grok panel cleanup is unconfirmed. Close it or refresh X before retrying."], "zh-CN": ["你的 Grok 面板已打开，请先收起，再重试。", "尚未确认 Grok 面板已收起，请关闭它或刷新 X 后重试。"], "zh-TW": ["你的 Grok 面板已開啟，請先收起，再重試。", "尚未確認 Grok 面板已收起，請關閉它或重新整理 X 後重試。"], "ja": ["Grok パネルを閉じてから再試行してください。", "Grok パネルの終了を確認できません。閉じるか X を再読み込みしてください。"], "ko": ["Grok 패널을 닫은 후 다시 시도하세요.", "Grok 패널 종료를 확인할 수 없습니다. 닫거나 X를 새로고침하세요."], "es": ["Cierra tu panel Grok y reintenta.", "No se confirmó el cierre de Grok. Ciérralo o recarga X."], "fr": ["Fermez votre panneau Grok puis réessayez.", "Fermeture de Grok non confirmée. Fermez-le ou actualisez X."], "de": ["Grok-Panel schließen und erneut versuchen.", "Grok-Schließen nicht bestätigt. Panel schließen oder X neu laden."], "pt": ["Feche o painel Grok e tente novamente.", "Fecho do Grok não confirmado. Feche-o ou atualize o X."], "ar": ["أغلق لوحة Grok ثم أعد المحاولة.", "لم يتأكد إغلاق Grok. أغلق اللوحة أو حدّث X."], "ru": ["Закройте панель Grok и повторите.", "Закрытие Grok не подтверждено. Закройте панель или обновите X."], "hi": ["Grok पैनल बंद करके फिर प्रयास करें।", "Grok बंद होने की पुष्टि नहीं हुई। पैनल बंद करें या X रीफ़्रेश करें।"]});
+  const persistentCacheCopy = {
+    "en": ["Answer cache limit (MB)","Default: 1024 MB (1 GB). Completed post answers do not expire and survive browser restart. When full, least recently used answers are removed. Save to apply; space is not preallocated.","Clears persistent post answers and session comment cache, keeping browsing history. Refresh X or retry a post afterward."],
+    "zh-CN": ["答案缓存上限（MB）","默认 1024 MB（1 GB）。完整帖子答案长期保留，重启浏览器后仍可使用；超出上限时删除最久未使用的结果。保存后生效，不会预先占满空间。","清除长期保存的帖子答案及本次会话的评论缓存，保留浏览历史。清除后刷新 X 或重新分析帖子。"],
+    "zh-TW": ["答案快取上限（MB）","預設 1024 MB（1 GB）。完整貼文答案長期保留，重新啟動瀏覽器後仍可使用；超過上限時刪除最久未使用的結果。儲存後生效，不會預先佔滿空間。","清除長期保存的貼文答案及本次工作階段的評論快取，保留瀏覽歷史。清除後重新整理 X 或重新分析貼文。"]
+  };
+  Object.assign(persistentCacheCopy, {
+  "ja": [
+    "回答キャッシュ上限（MB）",
+    "既定は1024 MB（1 GB）。投稿の完全な回答は期限なく保存され、ブラウザー再起動後も使えます。上限を超えると最も長く使われていない回答を削除します。保存で適用。容量は事前確保しません。",
+    "保存された投稿の回答とセッションのコメントキャッシュを消去します。閲覧履歴は残ります。Xを再読み込みするか投稿を再分析してください。"
+  ],
+  "ko": [
+    "답변 캐시 한도(MB)",
+    "기본값은 1024 MB(1 GB)입니다. 완성된 게시물 답변은 만료 없이 저장되며 브라우저 재시작 후에도 유지됩니다. 한도를 넘으면 가장 오래 사용하지 않은 답변부터 삭제합니다. 저장하면 적용되며 공간을 미리 할당하지 않습니다.",
+    "저장된 게시물 답변과 세션 댓글 캐시를 지웁니다. 방문 기록은 유지됩니다. X를 새로고침하거나 게시물을 다시 분석하세요."
+  ],
+  "es": [
+    "Límite de caché de respuestas (MB)",
+    "Predeterminado: 1024 MB (1 GB). Las respuestas completas no caducan y sobreviven al reinicio. Al superar el límite se eliminan las menos usadas recientemente. Guarda para aplicar; no se reserva espacio.",
+    "Borra las respuestas guardadas y la caché de comentarios de la sesión, conservando el historial. Recarga X o vuelve a analizar."
+  ],
+  "fr": [
+    "Limite du cache de réponses (Mo)",
+    "Par défaut : 1024 Mo (1 Go). Les réponses complètes sont conservées sans expiration, même après redémarrage. Au-delà de la limite, les moins récemment utilisées sont supprimées. Enregistrez pour appliquer ; aucun espace préalloué.",
+    "Efface les réponses enregistrées et le cache de commentaires de la session, en conservant l’historique. Rechargez X ou relancez l’analyse."
+  ],
+  "de": [
+    "Antwortcache-Limit (MB)",
+    "Standard: 1024 MB (1 GB). Vollständige Antworten bleiben ohne Ablaufdatum auch nach einem Neustart erhalten. Bei Überschreitung werden die am längsten nicht verwendeten Antworten gelöscht. Speichern zum Anwenden; kein vorab reservierter Speicher.",
+    "Löscht gespeicherte Antworten und den Kommentarcache der Sitzung. Der Verlauf bleibt erhalten. X neu laden oder erneut analysieren."
+  ],
+  "pt": [
+    "Limite do cache de respostas (MB)",
+    "Padrão: 1024 MB (1 GB). Respostas completas não expiram e permanecem após reiniciar. Ao atingir o limite, as menos usadas recentemente são removidas. Salve para aplicar; não há reserva antecipada de espaço.",
+    "Limpa respostas salvas e comentários da sessão, mantendo o histórico. Recarregue X ou analise novamente."
+  ],
+  "ar": [
+    "حد ذاكرة الإجابات (MB)",
+    "الافتراضي 1024 MB ‏(1 GB). لا تنتهي صلاحية الإجابات المكتملة وتبقى بعد إعادة تشغيل المتصفح. عند تجاوز الحد تحذف الإجابات الأقل استخدامًا مؤخرًا. احفظ للتطبيق؛ لا تحجز المساحة مسبقًا.",
+    "يمسح الإجابات المحفوظة وتعليقات الجلسة مع إبقاء سجل التصفح. حدّث X أو أعد التحليل."
+  ],
+  "ru": [
+    "Лимит кэша ответов (МБ)",
+    "По умолчанию 1024 МБ (1 ГБ). Полные ответы хранятся без срока действия и сохраняются после перезапуска. При превышении лимита удаляются давно не использовавшиеся ответы. Сохраните настройки; место заранее не выделяется.",
+    "Удаляет сохранённые ответы и кэш комментариев сеанса, сохраняя историю. Обновите X или запустите анализ снова."
+  ],
+  "hi": [
+    "उत्तर कैश सीमा (MB)",
+    "डिफ़ॉल्ट: 1024 MB (1 GB)। पूरे उत्तर बिना समय सीमा के रहते हैं और ब्राउज़र पुनः शुरू करने पर भी मिलते हैं। सीमा पार होने पर सबसे लंबे समय से उपयोग न हुए उत्तर हटते हैं। लागू करने के लिए सहेजें; स्थान पहले से आरक्षित नहीं होता।",
+    "सहेजे गए उत्तर और सत्र के टिप्पणी कैश को हटाता है, ब्राउज़िंग इतिहास रखता है। X रीफ़्रेश करें या दोबारा विश्लेषण करें।"
+  ]
+});
+  section(["options.cacheLimit","options.cacheLimitHelp","options.cacheHelp"], persistentCacheCopy);
+  section(["options.prefetchCount","options.prefetchAll","options.prefetchHelp"], {
+  "en": [
+    "Posts to preload below the viewport",
+    "Preload all posts already loaded on this page",
+    "Default: 5; 0 turns preloading off. Visible posts have priority. Preloading uses the selected provider allowance; cached answers are reused. All covers posts X has already loaded, without automatic scrolling. Updates as you scroll; the dwell delay applies only to visible posts."
+  ],
+  "zh-CN": [
+    "向下预加载帖子数",
+    "预加载本页已加载的全部帖子",
+    "默认 5 条，设为 0 可关闭。优先处理当前可见帖子，预加载共用并发与所选服务的额度；已有缓存会直接复用。「全部」只处理 X 已加载的帖子，不自动滚动或无限拉取。随滚动更新，停留时间只约束可见帖子。"
+  ],
+  "zh-TW": [
+    "向下預載貼文數",
+    "預載本頁已載入的全部貼文",
+    "預設 5 則，設為 0 可關閉。優先處理目前可見貼文，預載共用並行數與所選服務的額度；已有快取會直接重用。「全部」只處理 X 已載入的貼文，不自動捲動或無限擷取。隨捲動更新，停留時間只限制可見貼文。"
+  ],
+  "ja": [
+    "画面下に先読みする投稿数",
+    "このページに読み込み済みの全投稿を先読み",
+    "既定は5件、0で無効。表示中の投稿を優先し、同じ同時実行枠とサービス利用枠を使います。キャッシュは再利用します。全件はXが読み込み済みの投稿のみで、自動スクロールしません。スクロール中も更新し、待機時間は表示中の投稿だけに適用します。"
+  ],
+  "ko": [
+    "화면 아래 미리 읽을 게시물 수",
+    "현재 페이지에 로드된 게시물 모두 미리 읽기",
+    "기본값 5개, 0은 끄기입니다. 보이는 게시물이 우선이며 동시 요청 및 서비스 한도를 공유합니다. 캐시는 재사용합니다. 모두는 X에 이미 로드된 게시물만 포함하며 자동 스크롤하지 않습니다. 스크롤 중에도 갱신되며 대기 시간은 보이는 게시물에만 적용됩니다."
+  ],
+  "es": [
+    "Publicaciones para precargar debajo de la vista",
+    "Precargar todas las publicaciones ya cargadas",
+    "Predeterminado: 5; 0 desactiva. Las visibles tienen prioridad. Comparte concurrencia y cuota del proveedor; reutiliza la caché. Todas incluye solo las ya cargadas por X, sin desplazamiento automático. Se actualiza al desplazarte; la espera solo se aplica a las visibles."
+  ],
+  "fr": [
+    "Publications à précharger sous la vue",
+    "Précharger toutes les publications déjà chargées",
+    "Par défaut : 5 ; 0 désactive. Les publications visibles sont prioritaires. Même limite de requêtes et quota du fournisseur ; cache réutilisé. Tout concerne uniquement les publications déjà chargées par X, sans défilement automatique. Mise à jour pendant le défilement ; délai uniquement pour les publications visibles."
+  ],
+  "de": [
+    "Beiträge unterhalb des sichtbaren Bereichs vorladen",
+    "Alle bereits geladenen Beiträge vorladen",
+    "Standard: 5; 0 deaktiviert. Sichtbare Beiträge haben Vorrang. Gemeinsames Parallelitätslimit und Anbieterkontingent; vorhandener Cache wird genutzt. Alle umfasst nur von X geladene Beiträge, ohne automatisches Scrollen. Aktualisiert beim Scrollen; Wartezeit nur für sichtbare Beiträge."
+  ],
+  "pt": [
+    "Publicações para pré-carregar abaixo da tela",
+    "Pré-carregar todas as publicações já carregadas",
+    "Padrão: 5; 0 desativa. Publicações visíveis têm prioridade. Compartilha concorrência e cota do provedor; reutiliza cache. Todas inclui apenas as já carregadas por X, sem rolagem automática. Atualiza ao rolar; a espera vale só para publicações visíveis."
+  ],
+  "ar": [
+    "عدد المنشورات المحملة مسبقًا أسفل العرض",
+    "تحميل كل المنشورات الموجودة في الصفحة مسبقًا",
+    "الافتراضي 5، و0 يعطله. الأولوية للمنشورات المرئية مع مشاركة حد التزامن وحصة الخدمة وإعادة استخدام الذاكرة. الكل يشمل ما حمّله X بالفعل فقط، دون تمرير تلقائي. يتحدث أثناء التمرير؛ الانتظار للمنشورات المرئية فقط."
+  ],
+  "ru": [
+    "Число предзагружаемых постов ниже экрана",
+    "Предзагружать все уже загруженные посты",
+    "По умолчанию 5; 0 отключает. Видимые посты имеют приоритет. Общая параллельность и квота сервиса; кэш используется повторно. Все означает только уже загруженные X посты, без автопрокрутки. Обновляется при прокрутке; задержка только для видимых постов."
+  ],
+  "hi": [
+    "दृश्य के नीचे प्रीलोड होने वाली पोस्ट",
+    "पेज पर पहले से लोड सभी पोस्ट प्रीलोड करें",
+    "डिफ़ॉल्ट 5; 0 से बंद। दिखने वाली पोस्ट पहले आती हैं। अनुरोध सीमा और सेवा कोटा साझा होते हैं; कैश फिर उपयोग होता है। सभी में केवल X द्वारा पहले से लोड पोस्ट हैं, बिना स्वतः स्क्रॉल के। स्क्रॉल करते समय अपडेट होता है; प्रतीक्षा केवल दिखने वाली पोस्ट के लिए है।"
+  ]
+});
   const aliases = {'common.auto':'lang.auto','common.failed':'status.failed','tooltip.collapse':'common.collapse','tooltip.expand':'common.expand','build.imageUnavailable':'draft.imageUnavailable','build.imageLimit':'error.mediaLimit'};
   for (const language of SUPPORTED_LANGUAGES) {
     for (const [key, source] of Object.entries(aliases)) catalog[language][key] = catalog[language][source];

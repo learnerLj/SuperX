@@ -95,7 +95,7 @@ Eligible API use from The X Subscription shares the plan's weekly allowance. Alt
 
 Existing plaintext Keys and usable session Keys from older versions migrate automatically when Remember Key is selected; plaintext records are removed after the encrypted save succeeds. Missing or damaged saved data requires entering the API Key once again. Older password-encrypted records are not decrypted and remain only until successful migration, replacement or clearing. Automatic encryption protects against exposure of the stored ciphertext alone; it does not protect against access to the full browser profile or a compromised device. See [Privacy](PRIVACY.md) for storage details.
 
-In API mode, requests go directly from the extension's background worker to `api.x.ai`; the project does not operate a relay server. The Key is not passed to the X page's content script. Analysis uses your Key when SuperX is enabled. Clearing or replacing the Key cancels queued and active requests and clears the session cache; already sent work may still be billed. Read [Privacy](PRIVACY.md), especially on pages that show non-public posts.
+In API mode, requests go directly from the extension's background worker to `api.x.ai`; the project does not operate a relay server. The Key is not passed to the X page's content script. Analysis uses your Key when SuperX is enabled. Clearing or replacing the Key cancels queued and active requests and clears the answer caches; already sent work may still be billed. Read [Privacy](PRIVACY.md), especially on pages that show non-public posts.
 
 ## Settings and behavior
 
@@ -123,7 +123,9 @@ There is no extension-level post-count limit or spending cap. More tabs, search 
 
 The per-post Token display uses provider-reported usage for the current fact check and comments. Hover it for model and stage details. It does not total earlier reanalyses or all account spending. Cached results show their original usage and that no new usage was incurred for that cache hit; partial or missing statistics are marked rather than estimated.
 
-Completed results are reusable for up to 24 hours within the current browser session, with a limit of 160 entries and approximately 4 MB. Cache identity includes the connection source, OAuth authorization identity where applicable, post, model, reasoning effort, answer language, search options, generation flow and effective prompts. Switching sources or signing into another OAuth account does not reuse the previous source/account's generated answers or comments, including generated history views; locally recorded post visits remain available. Cached results use trusted session storage and are removed when the browser session ends or credentials change. Old persistent caches are removed on upgrade. Expired entries are pruned when the worker starts and when new entries are saved; the 24 hours is a reuse limit, not an exact-time deletion timer within an open session. **Clear cache** removes the session cache. See [Privacy](PRIVACY.md) for what entries contain.
+By default, SuperX preloads the next **five eligible posts below the viewport**. Settings lets you change the count (0 disables it) or select all posts X has already loaded. The window advances as you scroll, without waiting for the visible-post dwell timer. Visible posts have priority, and both use the same provider concurrency and allowance. Preloading reuses cached answers and does not automatically scroll or fetch an unlimited timeline. It starts checks earlier, but cannot guarantee they finish before you reach a post.
+
+Completed post answers are saved locally with **no time expiry**, including across browser restart. Settings → Maintenance → **Answer cache limit (MB)** defaults to **1024 MB (1 GB)**; lower or raise it and save. Space grows only as used. When the limit is exceeded, the least recently used answers are removed. This is a logical data budget; database file overhead is additional. Cache identity includes the source, account where applicable, canonical post URL, language and effective check settings. Native Grok uses the visible X profile identity and fixed Fast mode; an unknown account skips persistent reuse. **Reanalyze** bypasses the cache and replaces it after success; a failed refresh keeps the previous successful answer. **Clear cache** removes saved answers and session comment cache without deleting browsing history. Comments retain the separate 24-hour session cache; manual drafts remain uncached. See [Privacy](PRIVACY.md) for stored fields.
 
 ## Browsing history
 
@@ -155,15 +157,18 @@ An answer with sources is not a guarantee of correctness. An incomplete fact che
 
 ## Development
 
-Use **Node.js 22 or newer**. No `npm install` is needed for the extension, tests or local preview.
+Use **Node.js 22 or newer**. Install the locked development dependencies with `npm ci`; installed extension users do not need Node. The typed core is maintained in `src/`; see [architecture and provider interfaces](docs/ARCHITECTURE.md).
 
 ```sh
-node tools/validate.mjs
+npm ci
+npm run build
+npm test
+npm run check
 node tools/preview-server.mjs
 npm run package
 ```
 
-The validator checks declared resources, JavaScript syntax and automated tests. The preview server prints a local URL and uses simulated storage and answers; it does not read your installed extension's Key or call the paid API. Continuous integration runs the validator and produces installation artifacts. See [Contributing](CONTRIBUTING.md) for development and [the release checklist](docs/RELEASE_CHECKLIST.md) for acceptance status. CI artifacts do not by themselves publish a GitHub Release. The website is maintained separately and is not part of this repository or its source release.
+Validation checks strict TypeScript, generated output consistency, declared resources, JavaScript syntax and automated tests. The preview server prints a local URL and uses simulated storage and answers; it does not read your installed extension's Key or call the paid API. Continuous integration runs the validator and produces installation artifacts. See [Contributing](CONTRIBUTING.md) for development and [the release checklist](docs/RELEASE_CHECKLIST.md) for acceptance status. CI artifacts do not by themselves publish a GitHub Release. The website is maintained separately and is not part of this repository or its source release.
 
 | Folder | Contents |
 | --- | --- |

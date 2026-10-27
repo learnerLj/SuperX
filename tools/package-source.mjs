@@ -9,13 +9,13 @@ import { createArchive, inspectPackage } from './package-extension.mjs';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const PUBLIC_ROOT_FILES = Object.freeze([
   '.gitattributes', '.gitignore', 'LICENSE', 'README.md', 'README.zh-CN.md',
-  'PRIVACY.md', 'SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'package.json',
+  'PRIVACY.md', 'SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'package.json', 'package-lock.json', 'tsconfig.json',
 ]);
 export const PUBLIC_SOURCE_DIRECTORIES = Object.freeze([
-  '.github', 'demo', 'tests', 'tools', 'docs',
+  '.github', 'demo', 'tests', 'tools', 'docs', 'src',
 ]);
 const privateTools = new Set(['tools/check-privacy-site.mjs', 'tools/render-store-assets.mjs']);
-const publicDocuments = new Set(['docs/RELEASE_CHANNELS.md', 'docs/RELEASE_CHECKLIST.md', 'docs/CONNECTIONS.md']);
+const publicDocuments = new Set(['docs/RELEASE_CHANNELS.md', 'docs/RELEASE_CHECKLIST.md', 'docs/CONNECTIONS.md', 'docs/ARCHITECTURE.md']);
 // Only these two language-specific README screenshots are public and required;
 // obsolete previews and unrelated local screenshots stay out of exports.
 const documentationImages = new Set([
@@ -28,7 +28,8 @@ const hash = data => createHash('sha256').update(data).digest('hex');
 function isPublicFile(directory, name) {
   if (directory === '.github') return /\.(?:ya?ml|md)$/.test(name);
   if (directory === 'demo') return /\.(?:html|js)$/.test(name);
-  if (directory === 'tests') return name.endsWith('.test.js') || name === 'tests/build-ws-fixture.js';
+  if (directory === 'tests') return name.endsWith('.type-test.ts') || name.endsWith('.test.js') || name === 'tests/build-ws-fixture.js';
+  if (directory === 'src') return name.endsWith('.ts');
   if (directory === 'tools') return name.endsWith('.mjs') && !privateTools.has(name);
   if (directory === 'docs') return publicDocuments.has(name) || documentationImages.has(name);
   return false;

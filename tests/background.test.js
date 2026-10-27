@@ -5,6 +5,10 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const Providers=require('../extension/provider-registry.js');
+const AnswerCache=require('../extension/answer-cache.js');
+const {IDBFactory}=require('fake-indexeddb');
+const answerProfiles=new WeakMap();
 const core = require('../extension/feed-core.js');
 const provider = require('../extension/api-provider.js');
 const nativeProvider = require('../extension/native-provider.js');
@@ -19,8 +23,8 @@ const clone = value => value === undefined ? undefined : structuredClone(value);
 const keyStoreProfiles = new WeakMap();
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate, label = 'background work') {
-  for (let i = 0; i < 100; i += 1) {
-    if (predicate()) return;
+  for (let i = 0; i < 1000; i += 1) {
+    if (await predicate()) return;
     await tick();
   }
   assert.fail(`Timed out waiting for ${label}`);
@@ -52,6 +56,9 @@ function storage(initial = {}, hooks = {}) {
 }
 function createBackground(options = {}) {
   const local = storage({ settings: { ...core.DEFAULT_SETTINGS, provider: options.native ? 'native' : 'api', ...options.settings }, ...options.local }, { get: options.localGet, set: options.localSet, remove: options.localRemove });
+  const indexedDB=options.indexedDB||(Object.hasOwn(options,'cache')||Object.hasOwn(options.session||{},'cache')?null:answerProfiles.get(options.local))||new IDBFactory();
+  answerProfiles.set(local.data,indexedDB);
+  const answerStore=AnswerCache.create({indexedDB});
   const keyStoreState=options.keyStoreState||keyStoreProfiles.get(options.local)||{key:null};
   keyStoreProfiles.set(local.data,keyStoreState);
   const keyStoreCalls=[];
@@ -147,6 +154,7 @@ function createBackground(options = {}) {
   let now = options.now ?? 1800000000000;
   class ClockDate extends Date { static now() { return now; } }
   const context = vm.createContext({
+    SuperXProviders:Providers,indexedDB,SuperXAnswerCache:{create(){const store={...answerStore};for(const method of ['get','put','trim','clear','migrate','ready','removeProvider']){store[method]=async(...args)=>{if(options['answer'+method[0].toUpperCase()+method.slice(1)])await options['answer'+method[0].toUpperCase()+method.slice(1)](...args);const result=await answerStore[method](...args);if(method==='get'&&options.answerGetResult)await options.answerGetResult(result);return result;};}return store;}},
     SuperXNative:{publicError:nativeProvider.publicError,create(){return {async run(post,settings,callbacks){assert.equal(callbacks.client.port.name,'GROKFIRST_FEED');assert.equal(callbacks.client.port.sender.id,chrome.runtime.id);assert.equal(callbacks.client.port.sender.frameId,0);assert.equal(callbacks.client.tabId,callbacks.client.port.sender.tab.id);const call={post,settings,...callbacks};nativeCalls.push(call);return options.nativeRun?options.nativeRun(call,harness):{text:'Native checked '+post.id,sources:[],provider:'x-native',model:'x-web',usageComplete:false,verificationStatus:'completed',verified:false,searched:false};}};}},
     chrome, XGrokCore: options.retryLimit===undefined?core:{...core,AUTO_RETRY_LIMIT:options.retryLimit}, GrokFirstUI:ui, SuperXKeyStore:options.keyStore||keyStore,SuperXBuildConnectionStore:buildStore,SuperXBuildSetup:setup, SuperXHistoryStore:{...historyStore,create(area){return historyStore.create(area,{now:()=>now});}}, SuperXOAuth:{ALARMS:{poll:'SUPERX_OAUTH_DEVICE_POLL',refresh:'SUPERX_OAUTH_REFRESH'},create(value){oauthChanged=value.onChange;return oauthManager;}}, importScripts() {}, URL, AbortController, DOMException, crypto, Date: ClockDate, TextEncoder, TextDecoder,
     navigator: Object.hasOwn(options, 'navigator') ? options.navigator : { language: 'en-US' },
@@ -169,6 +177,14 @@ function createBackground(options = {}) {
     clearTimeout(timer) { if (timer?.immediate) clearImmediate(timer.immediate); if (timer?.deadline) timer.cancelled = true; }
   });
   const harness = {
+    indexedDB,answerStore,
+    async cacheSnapshot(wait=true){
+      if(wait)await vm.runInContext('cacheWrites.catch(()=>{})',context);
+      const db=await new Promise((resolve,reject)=>{const req=indexedDB.open('SuperXAnswers',1);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
+      const tx=db.transaction('answers','readonly'),req=tx.objectStore('answers').getAll();
+      const entries=await new Promise((resolve,reject)=>{req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});db.close();
+      return {...clone(session.data.cache||{}),...Object.fromEntries(entries.map(entry=>[entry.key,clone(entry.value)]))};
+    },
     nativeCalls,chrome, permissionState, local, session, alarmCalls,oauthManager,oauthCalls, buildStore,buildState,buildStoreCalls, keyStore:options.keyStore||keyStore, keyStoreState, keyStoreCalls, apiCalls, commentCalls, buildCalls,buildCommentCalls,buildStatusCalls,runtimeMessages, createdTabs, removedTabs, tabMessages, tabs, windows, createdWindows, removedWindows, deadlines,
     now() { return now; },
     advance(ms) { now += ms; },
@@ -183,6 +199,7 @@ function createBackground(options = {}) {
       assert.ok(timer, 'An active generation deadline exists');
       timer.cancelled = true; now += timer.delay; timer.deadline();
     },
+    queuedRequests(){return [...vm.runInContext('queue.map(job=>job.requestId)',context)];},
     async ready() { await vm.runInContext('ready', context); },
     async configureBuild(){return this.message({type:'SAVE_BUILD_CONNECTION',secret:BUILD_SECRET,port:2419});},
     connect(overrides = {}) {
@@ -736,7 +753,7 @@ test('comment failures and partial Fact Checks forward separately sanitized requ
 });
 
 test('returned incomplete results retain request diagnostics and one safe local error record',async()=>{
-  const bg=createBackground({apiRun:()=>({text:'Partial evidence.',provider:'api',verificationStatus:'incomplete',verificationFailure:diagnosticFailure,requestDiagnostics:safeRequestDiagnostics,usage:{total_tokens:8}})});await bg.ready();const result=await analyze(bg,bg.connect(),'diagnostic-returned-partial');assert.equal(result.type,'RESULT');assert.equal(result.result.usage.total_tokens,8);assert.deepEqual(result.result.requestDiagnostics,safeRequestDiagnostics);assert.deepEqual((await readDiagnostics(bg)).entries,[{recordedAt:bg.now(),code:'API_ERROR',requestDiagnostics:safeRequestDiagnostics,verificationFailure:diagnosticFailure}]);assert.equal(bg.session.data.cache?.[Object.keys(bg.session.data.cache||{})[0]],undefined);
+  const bg=createBackground({apiRun:()=>({text:'Partial evidence.',provider:'api',verificationStatus:'incomplete',verificationFailure:diagnosticFailure,requestDiagnostics:safeRequestDiagnostics,usage:{total_tokens:8}})});await bg.ready();const result=await analyze(bg,bg.connect(),'diagnostic-returned-partial');assert.equal(result.type,'RESULT');assert.equal(result.result.usage.total_tokens,8);assert.deepEqual(result.result.requestDiagnostics,safeRequestDiagnostics);assert.deepEqual((await readDiagnostics(bg)).entries,[{recordedAt:bg.now(),code:'API_ERROR',requestDiagnostics:safeRequestDiagnostics,verificationFailure:diagnosticFailure}]);assert.equal((await bg.cacheSnapshot())?.[Object.keys((await bg.cacheSnapshot())||{})[0]],undefined);
 });
 
 test('diagnostic log access is limited to trusted extension pages and Clear affects neither history nor Key',async()=>{
@@ -1317,8 +1334,8 @@ test('startup removes expired and invalid session cache entries while preserving
       sessionSet:values=>{if(Object.hasOwn(values,'cache'))writes.push(clone(values));}
     });
     await bg.ready();
-    assert.deepEqual(bg.session.data.cache,{explanation,comments});
-    assert.deepEqual(writes,[{cache:{explanation,comments}}],'Startup updates the session without persisting post content to disk');
+    assert.deepEqual((await bg.cacheSnapshot()),{explanation,comments});
+    assert.deepEqual(writes,[{cache:{comments}}],'Only comment answers remain in session storage');
     assert.equal(bg.local.data.rememberApiKey,rememberApiKey);
     await assertStoredKey(bg,rememberApiKey?'private-local-key':undefined);
     assert.equal(bg.session.data.apiKey,rememberApiKey?'private-local-key':'private-session-key');
@@ -1333,7 +1350,7 @@ test('startup removes expired and invalid session cache entries while preserving
 test('failed startup cache cleanup preserves availability and never reuses expired answers',async()=>{
   const seeded=createBackground({apiRun:async()=>({text:'Expired cached answer',provider:'api',verificationStatus:'completed'})});
   await seeded.ready();await analyze(seeded,seeded.connect(),'seed-expired-answer');
-  const expiredCache=clone(seeded.session.data.cache);
+  const expiredCache=clone((await seeded.cacheSnapshot()));
   for(const entry of Object.values(expiredCache))entry.completedAt=seeded.now()-24*60*60*1000;
   let failedCacheWrites=0;
   const bg=createBackground({cache:expiredCache,local:{rememberApiKey:false},
@@ -1342,7 +1359,7 @@ test('failed startup cache cleanup preserves availability and never reuses expir
   });
   await bg.ready();
   assert.equal(failedCacheWrites,1,'The rejected startup cleanup is attempted once');
-  assert.deepEqual(bg.session.data.cache,expiredCache,'A failed session write cannot claim to have deleted stored data');
+  assert.deepEqual((await bg.cacheSnapshot()),expiredCache,'A failed session write cannot claim to have deleted stored data');
   const port=bg.connect();await until(()=>port.messages.some(message=>message.type==='CONFIG'));
   assert.equal(port.messages.some(message=>message.type==='FATAL'),false);
   assert.equal(port.messages.find(message=>message.type==='CONFIG').ready,true);
@@ -1350,7 +1367,7 @@ test('failed startup cache cleanup preserves availability and never reuses expir
   const fresh=await analyze(bg,port,'fresh-after-cache-failure');
   assert.equal(fresh.type,'RESULT');assert.equal(fresh.cached,false);assert.equal(fresh.result.text,'New usable answer');
   assert.equal(bg.apiCalls.length,1,'Expired session contents must not bypass a new provider call');
-  assert.equal(failedCacheWrites,2,'The rejected startup write does not block the next queued cache write');
+  assert.equal(failedCacheWrites,1,'Post answers use IndexedDB rather than the failed session writer');
   const inMemory=await analyze(bg,port,'memory-after-cache-failure');
   assert.equal(inMemory.cached,true);assert.equal(inMemory.result.text,'New usable answer');assert.equal(bg.apiCalls.length,1);
   assert.equal(JSON.stringify(port.messages).includes('Expired cached answer'),false);
@@ -1358,7 +1375,7 @@ test('failed startup cache cleanup preserves availability and never reuses expir
   assert.equal(bg.session.data.apiKey,'session-secret');
 });
 
-test('startup leaves absent and wholly fresh caches unwritten, including legacy saved metadata and key ordering',async()=>{
+test('startup migrates fresh legacy posts and keeps only comments in session storage',async()=>{
   const now=1800000000000;
   const fresh={older:{completedAt:now-2,text:'Older live answer',usage:{total_tokens:10}},newer:{completedAt:now-1,comments:['A.','B.','C.'],model:'existing-model'}};
   for(const input of [undefined,{},fresh]) {
@@ -1367,8 +1384,8 @@ test('startup leaves absent and wholly fresh caches unwritten, including legacy 
       sessionSet:values=>{if(Object.hasOwn(values,'cache'))writes.push(clone(values));}
     });
     await bg.ready();
-    assert.deepEqual(writes,[],'No startup session rewrite is needed when no entry is removed');
-    assert.deepEqual(bg.session.data.cache,input);
+    assert.deepEqual(writes,input===undefined?[]:[{cache:input===fresh?{newer:fresh.newer}:{}}]);
+    assert.deepEqual((await bg.cacheSnapshot()),input||{});
     assert.equal(bg.apiCalls.length,0);assert.equal(bg.commentCalls.length,0);
   }
 });
@@ -1380,7 +1397,7 @@ test('malformed cache containers are replaced by an empty cache on startup witho
       sessionSet:values=>{if(Object.hasOwn(values,'cache'))writes.push(clone(values));}
     });
     await bg.ready();
-    assert.deepEqual(bg.session.data.cache,{});assert.deepEqual(writes,[{cache:{}}]);
+    assert.deepEqual((await bg.cacheSnapshot()),{});assert.deepEqual(writes,[{cache:{}}]);
     assert.equal(bg.local.data.rememberApiKey,false);assert.equal(Object.hasOwn(bg.local.data,'apiKey'),false);
     assert.equal(bg.apiCalls.length,0);assert.equal(bg.commentCalls.length,0);
   }
@@ -1390,23 +1407,23 @@ test('startup applies the existing entry and byte caps to persisted caches, reta
   const now=1800000000000;
   const many=Object.fromEntries(Array.from({length:165},(_,index)=>['answer-'+index,{completedAt:now-index,text:'Answer '+index}]));
   const countLimited=createBackground({cache:many,local:{rememberApiKey:false}});await countLimited.ready();
-  assert.equal(Object.keys(countLimited.session.data.cache).length,160);
-  assert.equal(Object.hasOwn(countLimited.session.data.cache,'answer-0'),true);assert.equal(Object.hasOwn(countLimited.session.data.cache,'answer-159'),true);
-  assert.equal(Object.hasOwn(countLimited.session.data.cache,'answer-160'),false);
+  assert.equal(Object.keys((await countLimited.cacheSnapshot())).length,160);
+  assert.equal(Object.hasOwn((await countLimited.cacheSnapshot()),'answer-0'),true);assert.equal(Object.hasOwn((await countLimited.cacheSnapshot()),'answer-159'),true);
+  assert.equal(Object.hasOwn((await countLimited.cacheSnapshot()),'answer-160'),false);
   const large=Object.fromEntries(Array.from({length:50},(_,index)=>['large-'+index,{completedAt:now-index,text:'x'.repeat(100000)}]));
   const byteLimited=createBackground({cache:large,local:{rememberApiKey:false}});await byteLimited.ready();
-  const retained=Object.entries(byteLimited.session.data.cache);
-  assert.ok(retained.length>0&&retained.length<50);assert.equal(Object.hasOwn(byteLimited.session.data.cache,'large-0'),true);
+  const retained=Object.entries((await byteLimited.cacheSnapshot()));
+  assert.ok(retained.length>0&&retained.length<50);assert.equal(Object.hasOwn((await byteLimited.cacheSnapshot()),'large-0'),true);
   assert.ok(retained.reduce((bytes,entry)=>bytes+Buffer.byteLength(JSON.stringify(entry)),0)<=4000000);
   for(const bg of [countLimited,byteLimited]){assert.equal(bg.apiCalls.length,0);assert.equal(bg.commentCalls.length,0);}
 });
 
-test('cache expires after one day and partitions model, language and tools while retired providers migrate to API', async () => {
+test('post cache has no TTL and partitions model, language and tools while retired providers migrate to API', async () => {
   const bg = createBackground({settings:{explanationMode:'custom'}}); await bg.ready(); const port = bg.connect();
   await analyze(bg, port, 'initial');
   assert.equal((await analyze(bg, port, 'cached')).cached, true);
   bg.advance(24 * 60 * 60 * 1000 + 1);
-  assert.equal((await analyze(bg, port, 'expired')).cached, false);
+  assert.equal((await analyze(bg, port, 'expired')).cached, true);
   const changes = [{ language: 'en' }, { apiModel: 'other-grok-model' }, { webSearch: false }, { webSearch: true, xSearch: false }];
   let settings = { ...core.DEFAULT_SETTINGS, provider: 'api', explanationMode:'custom' };
   for (const [i, change] of changes.entries()) {
@@ -1414,7 +1431,7 @@ test('cache expires after one day and partitions model, language and tools while
     await bg.message({ type: 'SAVE_SETTINGS', settings });
     assert.equal((await analyze(bg, port, `partition-${i}`)).cached, false);
   }
-  assert.equal(bg.apiCalls.length, 6);
+  assert.equal(bg.apiCalls.length, 5);
   await bg.message({ type: 'SAVE_SETTINGS', settings: { ...settings, provider: 'native' } });
   assert.equal((await analyze(bg, port, 'native-partition')).cached, true);
   assert.equal(bg.createdTabs.length, 0);
@@ -1430,11 +1447,11 @@ test('old API answers with mixed output languages are regenerated and the new la
   const refreshed=await analyze(bg,port,'regenerate-old-mixed-answer');
   assert.equal(refreshed.cached,false);assert.equal(bg.apiCalls.length,1);
   assert.equal(refreshed.result.text,'Quick meaning: An English post.\n\nFact check: English evidence.');
-  const newKey=Object.keys(bg.session.data.cache).find(key=>key.includes('api-v11-context-images'));
-  assert.ok(newKey);assert.equal(bg.session.data.cache[newKey].text,refreshed.result.text);
+  const newKey=Object.keys((await bg.cacheSnapshot())).find(key=>key.includes('api-v11-context-images'));
+  assert.ok(newKey);assert.equal((await bg.cacheSnapshot())[newKey].text,refreshed.result.text);
   assert.equal((await analyze(bg,port,'new-answer-cached')).cached,true);
   assert.equal(bg.apiCalls.length,1);
-  const restarted=createBackground({session:bg.session.data});await restarted.ready();
+  const restarted=createBackground({indexedDB:bg.indexedDB,session:bg.session.data});await restarted.ready();
   const persisted=await analyze(restarted,restarted.connect(),'new-answer-after-restart');
   assert.equal(persisted.cached,true);assert.equal(persisted.result.text,refreshed.result.text);
   assert.equal(restarted.apiCalls.length,0);
@@ -1460,13 +1477,13 @@ test('0.6.1 API analysis caches regenerate naturally in every mode and fresh ans
     const first=await analyze(bg,port,'regenerate-061-'+mode,100,{post:input});
     assert.equal(first.cached,false,mode+' must not reuse a templated 0.6.1 answer');
     assert.equal(first.result.text,freshText);assert.equal(bg.apiCalls.length,1);
-    const storedKeys=Object.keys(bg.session.data.cache);
+    const storedKeys=Object.keys((await bg.cacheSnapshot()));
     assert.ok(storedKeys.includes(oldKey),'The migration does not destructively remove unrelated stored data');
     const freshKey=storedKeys.find(key=>key!==oldKey);
     assert.ok(freshKey);assert.equal(JSON.parse(freshKey)[6],'api-v11-context-images');
         assert.equal((await analyze(bg,port,'natural-cache-hit-'+mode,100,{post:input})).cached,true);
     assert.equal(bg.apiCalls.length,1);
-    const restarted=createBackground({settings:s,session:bg.session.data});
+    const restarted=createBackground({indexedDB:bg.indexedDB,settings:s,session:bg.session.data});
     await restarted.ready();
     const persisted=await analyze(restarted,restarted.connect(),'natural-after-restart-'+mode,100,{post:input});
     assert.equal(persisted.cached,true);assert.equal(persisted.result.text,freshText);
@@ -1488,7 +1505,7 @@ test('comments cached before explicit reasoning selection cannot substitute for 
     await bg.ready();
     const response=await draftComments(bg,bg.connect(),'preserved-061-comments-'+mode,100,{post:input,analysis});
     assert.equal(response.cached,false);assert.notDeepEqual(response.comments,comments);
-    assert.deepEqual(bg.session.data.cache[oldKey].comments,comments,'Old session records are not rewritten to invent an effort');
+    assert.deepEqual((await bg.cacheSnapshot())[oldKey].comments,comments,'Old session records are not rewritten to invent an effort');
     assert.equal(bg.commentCalls.length,1);assert.equal(bg.apiCalls.length,0);
   }
 });
@@ -1506,12 +1523,12 @@ test('0.6.2 excerpt-based caches cannot substitute for full-post answers in any 
     await bg.ready();const port=bg.connect();
     const fresh=await analyze(bg,port,'read-full-'+mode,100,{post:input});
     assert.equal(fresh.cached,false,mode);assert.equal(fresh.result.text,freshText);assert.equal(bg.apiCalls.length,1);
-    const keys=Object.keys(bg.session.data.cache),freshKey=keys.find(key=>key!==oldKey);
+    const keys=Object.keys((await bg.cacheSnapshot())),freshKey=keys.find(key=>key!==oldKey);
     assert.ok(keys.includes(oldKey));assert.ok(freshKey);
     assert.equal(JSON.parse(freshKey)[6],'api-v11-context-images');
     assert.deepEqual(JSON.parse(JSON.parse(freshKey)[9]),['post-input-v4-source-full-url','api',input.url,'en']);
     assert.equal((await analyze(bg,port,'full-hit-'+mode,100,{post:input})).cached,true);
-    const restarted=createBackground({settings:s,session:bg.session.data});await restarted.ready();
+    const restarted=createBackground({indexedDB:bg.indexedDB,settings:s,session:bg.session.data});await restarted.ready();
     const persisted=await analyze(restarted,restarted.connect(),'full-restart-'+mode,100,{post:input});
     assert.equal(persisted.cached,true);assert.equal(persisted.result.text,freshText);assert.equal(restarted.apiCalls.length,0);
     assert.equal(restarted.local.data.settings.explainPrompt,s.explainPrompt);assert.equal(restarted.local.data.settings.verifyPrompt,s.verifyPrompt);
@@ -1540,13 +1557,13 @@ test('0.6.4 API process narration caches regenerate in every mode and reader-fac
     const first=await analyze(bg,port,'reader-output-'+mode,100,{post:input});
     assert.equal(first.cached,false,mode+' must not reuse a 0.6.4 process report');
     assert.equal(first.result.text,freshText);assert.equal(bg.apiCalls.length,1);
-    const keys=Object.keys(bg.session.data.cache),freshKey=keys.find(key=>key!==oldKey);
+    const keys=Object.keys((await bg.cacheSnapshot())),freshKey=keys.find(key=>key!==oldKey);
     assert.ok(keys.includes(oldKey),'Changing answer policy does not destructively remove stored data');
     assert.ok(freshKey);assert.equal(JSON.parse(freshKey)[6],'api-v11-context-images');
         assert.deepEqual(JSON.parse(JSON.parse(freshKey)[9]),['post-input-v4-source-full-url','api',input.url,'en']);
     const cached=await analyze(bg,port,'reader-output-hit-'+mode,100,{post:input});
     assert.equal(cached.cached,true);assert.equal(cached.result.text,freshText);assert.equal(bg.apiCalls.length,1);
-    const restarted=createBackground({settings:s,session:bg.session.data});
+    const restarted=createBackground({indexedDB:bg.indexedDB,settings:s,session:bg.session.data});
     await restarted.ready();
     const restored=await analyze(restarted,restarted.connect(),'reader-output-restart-'+mode,100,{post:input});
     assert.equal(restored.cached,true);assert.equal(restored.result.text,freshText);assert.equal(restarted.apiCalls.length,0);
@@ -1706,7 +1723,7 @@ test('switching explanation style cancels the accepted old stream and ignores it
   held.resolve();await tick();await tick();
   assert.equal(port.messages.some(value=>value.requestId==='url-in-flight'&&value.type==='RESULT'),false);
   const next=await analyze(bg,port,'new-style');assert.equal(next.result.text,'preset result');assert.equal(next.cached,false);
-  assert.equal(Object.values(bg.session.data.cache).some(value=>value.text==='custom result'),false);
+  assert.equal(Object.values((await bg.cacheSnapshot())).some(value=>value.text==='custom result'),false);
 });
 
 test('saving prompt changes preserves running and queued paid-task snapshots and applies to subsequently accepted requests',async()=>{
@@ -1787,22 +1804,10 @@ test('pre-enqueue async credential reads cannot resurrect cancelled, disconnecte
   }
 });
 
-test('complete answers remain visible and cached in memory when persistent cache storage fails', async () => {
-  let persistenceFailures = 0;
-  const bg = createBackground({ sessionSet: async values => {
-    if ('cache' in values) { persistenceFailures += 1; throw new Error('Storage quota exceeded'); }
-  } });
-  await bg.ready(); const port = bg.connect();
-  const result = await analyze(bg, port, 'completed');
-  assert.equal(result.type, 'RESULT');
-  assert.equal(result.result.text, 'Explanation 100');
-  assert.equal(persistenceFailures, 1);
-  assert.equal('cache' in bg.session.data, false);
-  const cached = await analyze(bg, port, 'memory-cache');
-  assert.equal(cached.type, 'RESULT');
-  assert.equal(cached.cached, true);
-  assert.equal(bg.apiCalls.length, 1);
-  assert.equal(bg.session.data.quotas[7], 1);
+test('complete answers remain visible when IndexedDB writes fail without inventing an in-memory fallback',async()=>{
+  let persistenceFailures=0;const bg=createBackground({answerPut:()=>{persistenceFailures++;throw new Error('Storage quota exceeded');}});await bg.ready();const port=bg.connect();
+  const result=await analyze(bg,port,'completed');assert.equal(result.type,'RESULT');assert.equal(result.result.text,'Explanation 100');await bg.cacheSnapshot();assert.equal(persistenceFailures,1);
+  const next=await analyze(bg,port,'after-storage-error');assert.equal(next.type,'RESULT');assert.equal(next.cached,false);assert.equal(bg.apiCalls.length,2);assert.equal(bg.session.data.quotas[7],2);
 });
 
 test('legacy provider cooldown adds no delay when requests arrive separately from different feed tabs', async () => {
@@ -1974,7 +1979,7 @@ test('rapid cancellation across tabs and comments retains every unfinished provi
   const pendingOther=calls.find(record=>record.call.post.id==='999');other.disconnect();await until(()=>pendingOther.call.signal.aborted);const reconnected=bg.connect({sender:{id:bg.chrome.runtime.id,frameId:0,url:'https://x.com/home',tab:{id:8}}});reconnected.send({type:'GENERATE_COMMENTS',requestId:'replacement-port-comment',post:post(500)});await tick();await tick();assert.equal(calls.length,13,'Disconnect cannot pretend its running provider already ended');complete(pendingOther);await until(()=>calls.length===14);assert.equal(maximum,4);
   for(const record of calls.filter(value=>!value.call.signal.aborted))complete(record);
   await until(()=>active===0);await tick();await tick();assert.equal(maximum,4);assert.doesNotMatch(JSON.stringify([...scrolling.messages,...reconnected.messages]),/STALE_CANCELED_OUTPUT/);assert.equal(other.messages.some(message=>message.type==='RESULT'),false);
-  assert.equal(Object.values(bg.session.data.cache||{}).some(value=>String(value.text||'').includes('STALE_CANCELED_OUTPUT')),false);
+  assert.equal(Object.values((await bg.cacheSnapshot())||{}).some(value=>String(value.text||'').includes('STALE_CANCELED_OUTPUT')),false);
 });
 
 test('a canceled API fetch keeps its slot through delayed browser abort settlement',async()=>{
@@ -2014,11 +2019,11 @@ test('an idle feed disconnect and worker wake retain session credentials and cac
   await bg.ready();const port=bg.connect();
   const completed=await analyze(bg,port,'before-idle');
   assert.equal(completed.cached,false);assert.equal(bg.apiCalls.length,1);
-  const stored=clone(bg.session.data),oldMessages=clone(port.messages);
+  const stored=clone(bg.session.data),storedAnswers=await bg.cacheSnapshot(),oldMessages=clone(port.messages);
   port.disconnect();await tick();
   assert.deepEqual(bg.session.data,stored,'A sleeping feed connection must not clear the unlocked Key or completed session cache');
   assert.deepEqual(port.messages,oldMessages,'Completed requests receive no synthetic disconnection errors');
-  const worker=createBackground({local:bg.local.data,session:bg.session.data});
+  const worker=createBackground({indexedDB:bg.indexedDB,local:bg.local.data,session:bg.session.data});
   await worker.ready();const wake=worker.connect();
   await until(()=>wake.messages.some(message=>message.type==='CONFIG'));
   assert.equal(wake.messages.find(message=>message.type==='CONFIG').ready,true);
@@ -2027,7 +2032,7 @@ test('an idle feed disconnect and worker wake retain session credentials and cac
   assert.equal(worker.apiCalls.length,0,'Connecting and heartbeats never replay paid analysis');
   assert.equal(worker.commentCalls.length,0);
   assert.deepEqual(worker.session.data.quotas,stored.quotas);
-  assert.deepEqual(worker.session.data.cache,stored.cache);
+  assert.deepEqual((await worker.cacheSnapshot()),storedAnswers);
   const restored=await analyze(worker,wake,'after-idle');
   assert.equal(restored.cached,true);assert.equal(restored.result.text,completed.result.text);
   assert.equal(worker.apiCalls.length,0,'An explicit request for a completed answer reuses its session cache');
@@ -2055,26 +2060,26 @@ test('a feed disconnect cancels only its running and queued work, and reconnect 
   await tick();await tick();
   assert.equal(oldPort.messages.some(message=>message.type==='RESULT'),false);
   assert.equal(wake.messages.some(message=>['UPDATE','RESULT','ERROR'].includes(message.type)),false);
-  assert.equal(Object.values(bg.session.data.cache||{}).some(value=>value.text==='Abandoned late answer'),false);
-  assert.equal(Object.values(bg.session.data.cache||{}).some(value=>value.text==='Other tab complete'),true);
+  assert.equal(Object.values((await bg.cacheSnapshot())||{}).some(value=>value.text==='Abandoned late answer'),false);
+  assert.equal(Object.values((await bg.cacheSnapshot())||{}).some(value=>value.text==='Other tab complete'),true);
   assert.equal(calls.length,2);
 });
 
 test('a BFCache port close consumes lastError and preserves cache while real provider cleanup retains its concurrency slot',async()=>{
   const cleanup=deferred(),bg=createBackground({settings:{apiConcurrency:1},apiRun:call=>call.post.id==='101'?cleanup.promise:{text:'Completed evidence '+call.post.id,provider:'api',verificationStatus:'completed',usage:{total_tokens:12}}});
-  await bg.ready();const old=bg.connect();await analyze(bg,old,'bfcache-complete',100);await until(()=>Object.keys(bg.session.data.cache||{}).length===1);
-  const savedKey=bg.session.data.apiKey,savedCache=clone(bg.session.data.cache);
+  await bg.ready();const old=bg.connect();await analyze(bg,old,'bfcache-complete',100);await until(async()=>Object.keys((await bg.cacheSnapshot())||{}).length===1);
+  const savedKey=bg.session.data.apiKey,savedCache=clone((await bg.cacheSnapshot()));
   old.send({type:'ANALYZE',requestId:'bfcache-running',post:post(101)});await until(()=>bg.apiCalls.length===2);
   old.send({type:'ANALYZE',requestId:'bfcache-queued',post:post(102)});await until(()=>old.messages.some(message=>message.requestId==='bfcache-queued'&&message.type==='QUEUED'));
   let reads=0;Object.defineProperty(bg.chrome.runtime,'lastError',{configurable:true,get(){reads++;return {message:'The page keeping the extension port is moved into back/forward cache. PRIVATE_CHANNEL_DETAIL'};}});
   old.disconnect();assert.equal(reads,1,'The worker acknowledges Chrome lastError inside onDisconnect');await until(()=>bg.apiCalls[1].signal.aborted);
-  assert.equal(bg.session.data.apiKey,savedKey);assert.deepEqual(bg.session.data.cache,savedCache,'Lifecycle cleanup never clears completed cached reading');
+  assert.equal(bg.session.data.apiKey,savedKey);assert.deepEqual((await bg.cacheSnapshot()),savedCache,'Lifecycle cleanup never clears completed cached reading');
   const restored=bg.connect();await until(()=>restored.messages.some(message=>message.type==='CONFIG'));restored.send({type:'PING'});await until(()=>restored.messages.some(message=>message.type==='PONG'));assert.equal(bg.apiCalls.length,2,'Reconnecting restores control only, without replaying abandoned jobs');
   restored.send({type:'ANALYZE',requestId:'bfcache-explicit-new',post:post(103)});await until(()=>restored.messages.some(message=>message.type==='QUEUED'&&message.requestId==='bfcache-explicit-new'));await tick();await tick();
   assert.equal(bg.apiCalls.length,2,'A detached provider still owns its slot until real cancellation settles');
   bg.apiCalls[1].onUpdate({text:'Obsolete detached stream',phase:'verify'});cleanup.resolve({text:'Obsolete detached final',provider:'api',verificationStatus:'completed'});
   await until(()=>restored.messages.some(message=>message.type==='RESULT'&&message.requestId==='bfcache-explicit-new'));
-  assert.deepEqual(bg.apiCalls.map(call=>call.post.id),['100','101','103']);assert.equal(old.messages.some(message=>message.requestId==='bfcache-running'&&message.type==='RESULT'),false);assert.equal(restored.messages.some(message=>message.requestId==='bfcache-running'),false);assert.equal(Object.values(bg.session.data.cache||{}).some(value=>String(value.text).includes('Obsolete')),false);assert.doesNotMatch(JSON.stringify(restored.messages),/PRIVATE_CHANNEL_DETAIL|back\/forward cache/);
+  assert.deepEqual(bg.apiCalls.map(call=>call.post.id),['100','101','103']);assert.equal(old.messages.some(message=>message.requestId==='bfcache-running'&&message.type==='RESULT'),false);assert.equal(restored.messages.some(message=>message.requestId==='bfcache-running'),false);assert.equal(Object.values((await bg.cacheSnapshot())||{}).some(value=>String(value.text).includes('Obsolete')),false);assert.doesNotMatch(JSON.stringify(restored.messages),/PRIVATE_CHANNEL_DETAIL|back\/forward cache/);
   old.onDisconnect.emit();assert.equal(reads,2,'A duplicate obsolete callback remains harmless and consumes its own error');assert.equal((await bg.message({type:'GET_CONFIG'})).ready,true);
 });
 
@@ -2092,7 +2097,7 @@ test('settings changes and client cancellation stop all old parallel jobs before
     for (const gate of gates) gate.resolve({ text: 'Stale answer', provider: 'api' });
     await tick(); await tick();
     assert.equal(port.messages.some(message => message.type === 'RESULT'), false);
-    assert.equal(Object.keys(bg.session.data.cache || {}).length, 0);
+    assert.equal(Object.keys((await bg.cacheSnapshot()) || {}).length, 0);
   }
 });
 
@@ -2136,8 +2141,8 @@ test('cancelling or changing settings prevents an untouched queued Fact Check fr
 test('parallel cache writes preserve all completed answers and clearing cache cannot be undone by an older write', async () => {
   for (const clear of [false, true]) {
     const write = deferred(), gates = new Map([['100', deferred()], ['101', deferred()]]); let writes = 0;
-    const bg = createBackground({ apiRun: call => gates.get(call.post.id).promise, sessionSet: async values => {
-      if ('cache' in values && ++writes === 1) await write.promise;
+    const bg = createBackground({ apiRun: call => gates.get(call.post.id).promise, answerPut: async () => {
+      if (++writes === 1) await write.promise;
     } });
     await bg.ready(); const port = bg.connect();
     port.send({ type: 'ANALYZE', requestId: 'cache-one', post: post(100) }); port.send({ type: 'ANALYZE', requestId: 'cache-two', post: post(101) });
@@ -2148,7 +2153,7 @@ test('parallel cache writes preserve all completed answers and clearing cache ca
     if (clear) await tick(); write.resolve(); if (clear) await clearing;
     await until(() => port.messages.filter(message => message.type === 'RESULT').length === 2);
     if (clear) { assert.equal('cache' in bg.session.data, false); assert.equal((await analyze(bg, port, 'after-clear', 100)).cached, false); }
-    else {await until(()=>Object.keys(bg.session.data.cache||{}).length===2);assert.deepEqual(Object.values(bg.session.data.cache).map(value => value.text).sort(), ['First', 'Second']);}
+    else {await until(async()=>Object.keys((await bg.cacheSnapshot())||{}).length===2);assert.deepEqual(Object.values((await bg.cacheSnapshot())).map(value => value.text).sort(), ['First', 'Second']);}
   }
 });
 
@@ -2162,17 +2167,17 @@ test('retired verification modes migrate to one Fact Check cache while incomplet
 
 test('completed API HTTP stages release slots and display results while optional cache persistence is pending', async () => {
   const writing = deferred(); let firstWrite = true;
-  const bg = createBackground({ settings: { apiConcurrency: 1 }, sessionSet: async values => {
-    if ('cache' in values && firstWrite) { firstWrite = false; await writing.promise; }
+  const bg = createBackground({ settings: { apiConcurrency: 1 }, answerPut: async () => {
+    if (firstWrite) { firstWrite = false; await writing.promise; }
   } });
   await bg.ready(); const port = bg.connect();
   port.send({ type: 'ANALYZE', requestId: 'persisting-result', post: post(100) });
   port.send({ type: 'ANALYZE', requestId: 'next-http', post: post(101) });
   await until(() => bg.apiCalls.length === 2);
   await until(()=>port.messages.filter(message=>message.type==='RESULT').length===2);
-  assert.equal(bg.session.data.cache,undefined,'The visible completed results do not wait for the blocked cache write');
+  assert.deepEqual(await bg.cacheSnapshot(false),{},'Visible results do not wait for the blocked IndexedDB write');
   assert.equal(bg.deadlines[0].cancelled,true,'Completed HTTP work cannot time out during a pending cache write');
-  writing.resolve();await until(()=>Object.keys(bg.session.data.cache||{}).length===2);
+  writing.resolve();await until(async()=>Object.keys((await bg.cacheSnapshot())||{}).length===2);
 });
 
 test('newly visible posts take a released Fact Check slot immediately without a second-stage reservation',async()=>{
@@ -2407,7 +2412,7 @@ test('comment cache is distinct from explanations and changes with source eviden
   assert.equal((await draftComments(bg,port,'custom-model-drafts',100,{analysis:changed})).cached,false);
   assert.equal(bg.commentCalls.length,5);
   assert.equal(bg.session.data.quotas[7],1);
-  assert.equal(Object.values(bg.session.data.cache).filter(value=>Array.isArray(value.comments)).length,4,'Regeneration replaces only its own comments cache entry');
+  assert.equal(Object.values((await bg.cacheSnapshot())).filter(value=>Array.isArray(value.comments)).length,4,'Regeneration replaces only its own comments cache entry');
 });
 
 test('comment caches from earlier prompt versions are regenerated', async () => {
@@ -2420,7 +2425,7 @@ test('comment caches from earlier prompt versions are regenerated', async () => 
   const generated=await draftComments(bg,port,'refresh-old-comment-language',100,{analysis});
   assert.equal(generated.cached,false);assert.notDeepEqual(generated.comments,oldComments);
   assert.equal(bg.commentCalls.length,1);assert.equal(bg.apiCalls.length,0);
-  assert.ok(Object.keys(bg.session.data.cache).some(key=>key.includes('GrokFirst-comments-v2-language')));
+  assert.ok(Object.keys((await bg.cacheSnapshot())).some(key=>key.includes('GrokFirst-comments-v2-language')));
   const cached=await draftComments(bg,port,'fresh-comments-cached',100,{analysis});
   assert.equal(cached.cached,true);assert.deepEqual(cached.comments,generated.comments);
   assert.equal(bg.commentCalls.length,1);
@@ -2475,7 +2480,7 @@ test('invalid comment results produce only COMMENT_ERROR and never enter the exp
     const response=await draftComments(bg,port,requestId);
     assert.equal(response.type,'COMMENT_ERROR');assert.equal(response.code,'COMMENTS_INVALID_RESPONSE');
   }
-  assert.equal(bg.commentCalls.length,2);assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+  assert.equal(bg.commentCalls.length,2);assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   assert.equal(port.messages.some(message=>['RESULT','COMMENT_RESULT','UPDATE'].includes(message.type)),false);
 });
 
@@ -2491,7 +2496,7 @@ test('cancelling a comment reports promptly but retains its slot until late draf
   assert.equal(bg.apiCalls.length,0,'A canceled comment still owns its unfinished HTTP slot');
   pending.resolve({comments:['Late first.','Late second.','Late third.'],provider:'api'});await until(()=>port.messages.some(message=>message.requestId==='next-explanation'&&message.type==='RESULT'));
   assert.equal(port.messages.some(message=>message.requestId==='cancelled-draft'&&message.type==='COMMENT_RESULT'),false);
-  assert.equal(Object.values(bg.session.data.cache||{}).some(value=>Array.isArray(value.comments)),false);
+  assert.equal(Object.values((await bg.cacheSnapshot())||{}).some(value=>Array.isArray(value.comments)),false);
   assert.equal(port.messages.find(message=>message.requestId==='cancelled-draft'&&message.type==='COMMENT_ERROR').code,'CANCELLED');
 });
 
@@ -2614,7 +2619,7 @@ test('saving only interface language preserves concurrent paid analyses, comment
   const explanation=deferred(),comments=deferred();
   const bg=createBackground({settings:{language:'en',interfaceLanguage:'auto'},apiRun:call=>call.post.id==='100'?{text:'Cached English explanation.',provider:'api'}:explanation.promise,commentRun:()=>comments.promise});
   await bg.ready();const port=bg.connect();await analyze(bg,port,'completed-before-ui-change',100);
-  const cacheBefore=clone(bg.session.data.cache);
+  const cacheBefore=clone((await bg.cacheSnapshot()));
   port.send({type:'ANALYZE',requestId:'pending-ui-analysis',post:post(101)});
   port.send({type:'GENERATE_COMMENTS',requestId:'pending-ui-comments',post:post(100)});
   await until(()=>bg.apiCalls.length===2&&bg.commentCalls.length===1);
@@ -2624,7 +2629,7 @@ test('saving only interface language preserves concurrent paid analyses, comment
   assert.equal(port.messages.findLast(message=>message.type==='CONFIG').settings.interfaceLanguage,'zh-CN');
   assert.equal(bg.apiCalls[1].signal.aborted,false);assert.equal(bg.commentCalls[0].signal.aborted,false);
   assert.equal(bg.apiCalls[1].settings.language,'en');assert.equal(bg.commentCalls[0].settings.language,'en');
-  assert.deepEqual(bg.session.data.cache,cacheBefore,'A presentation-only change retains completed results');
+  assert.deepEqual((await bg.cacheSnapshot()),cacheBefore,'A presentation-only change retains completed results');
   assert.equal(port.messages.some(message=>['pending-ui-analysis','pending-ui-comments'].includes(message.requestId)&&['ERROR','COMMENT_ERROR'].includes(message.type)),false);
   explanation.resolve({text:'Finished English explanation.',provider:'api'});comments.resolve({comments:['First English comment.','Second English comment.','Third English comment.'],provider:'api',task:'comments'});
   await until(()=>port.messages.some(message=>message.requestId==='pending-ui-analysis'&&message.type==='RESULT')&&port.messages.some(message=>message.requestId==='pending-ui-comments'&&message.type==='COMMENT_RESULT'));
@@ -2673,7 +2678,7 @@ test('analysis billing metadata reaches streaming, completion and cache reads wi
   assert.equal(result.result.model,'grok-actual');assert.equal(result.result.usageComplete,true);
   const cached=await analyze(bg,port,'billing-cached');assert.equal(cached.cached,true);assert.deepEqual(cached.result.usage,result.result.usage);
   assert.deepEqual(cached.result.modelByStage,{url:'grok-actual'});assert.equal(bg.apiCalls.length,1);
-  assert.equal(JSON.stringify({messages:port.messages,cache:bg.session.data.cache}).includes('must-not-leak'),false);
+  assert.equal(JSON.stringify({messages:port.messages,cache:(await bg.cacheSnapshot())}).includes('must-not-leak'),false);
 });
 
 test('analysis errors sanitize cumulative token metadata and retained partial results without a retry',async()=>{
@@ -2691,7 +2696,7 @@ test('analysis errors sanitize cumulative token metadata and retained partial re
   assert.deepEqual(failure.partialResult.usageByStage,{explain:{total_tokens:30},verify:{input_tokens:10}});
   assert.equal(failure.partialResult.verificationStatus,'incomplete');assert.equal(failure.partialResult.model,'grok-verify');
   assert.deepEqual(failure.partialResult.usage,failure.usage,'Retained prose must not hide the later charged counters');
-  assert.equal(bg.apiCalls.length,1);assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+  assert.equal(bg.apiCalls.length,1);assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   assert.equal(JSON.stringify(failure).includes('must-not-leak'),false);
 });
 
@@ -2703,7 +2708,7 @@ test('new and cached comment drafts retain their own usage and actual model whil
   assert.deepEqual(drafted.usage,{input_tokens:12,output_tokens:8,total_tokens:20});
   const cached=await draftComments(bg,port,'billing-comments-cached');assert.equal(cached.cached,true);assert.equal(cached.model,'grok-comments');assert.deepEqual(cached.usage,drafted.usage);
   assert.equal(bg.commentCalls.length,1);assert.equal(bg.apiCalls.length,1);assert.equal(analysis.result.model,'grok-analysis');assert.deepEqual(analysis.result.usage,{total_tokens:20});
-  assert.equal(JSON.stringify({messages:port.messages,cache:bg.session.data.cache}).includes('must-not-leak'),false);
+  assert.equal(JSON.stringify({messages:port.messages,cache:(await bg.cacheSnapshot())}).includes('must-not-leak'),false);
 });
 
 test('failed or invalid comment drafts retain charged counters and model but never enter the draft cache',async()=>{
@@ -2716,7 +2721,7 @@ test('failed or invalid comment drafts retain charged counters and model but nev
     await bg.ready();const failed=await draftComments(bg,bg.connect(),'billing-comment-error');
     assert.equal(failed.type,'COMMENT_ERROR');assert.equal(failed.code,'COMMENTS_INVALID_RESPONSE');assert.deepEqual(failed.usage,{total_tokens:42});
     assert.equal(failed.usageComplete,true);assert.equal(failed.model,'grok-comments');assert.equal(JSON.stringify(failed).includes('must-not-leak'),false);
-    assert.equal(bg.commentCalls.length,1);assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+    assert.equal(bg.commentCalls.length,1);assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   }
 });
 
@@ -2743,7 +2748,7 @@ test('cancelling paid work retains the last server-reported token snapshot and m
   const canceled=port.messages.find(message=>message.requestId==='cancel-billed'&&message.type==='ERROR');
   assert.equal(canceled.code,'CANCELLED');assert.deepEqual(canceled.usage,{total_tokens:30});assert.equal(canceled.model,'grok-actual');assert.equal(canceled.usageComplete,false);
   pending.resolve({text:'Late answer.',provider:'api',usage:{total_tokens:40},model:'grok-late'});await tick();await tick();
-  assert.equal(Object.keys(bg.session.data.cache||{}).length,0);assert.equal(port.messages.some(message=>message.requestId==='cancel-billed'&&message.type==='RESULT'),false);assert.equal(bg.apiCalls.length,1);
+  assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);assert.equal(port.messages.some(message=>message.requestId==='cancel-billed'&&message.type==='RESULT'),false);assert.equal(bg.apiCalls.length,1);
 });
 
 test('startup migrates retired provider and URL selections while preserving key stores, model, language and drafts',async()=>{
@@ -2808,7 +2813,7 @@ test('only safe background boundaries inside retained clipped text survive updat
     }});
     await bg.ready();const failure=await analyze(bg,bg.connect(),'boundary-partial');
     assert.equal(Object.hasOwn(failure.partialResult,'verificationStart'),false);
-    assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+    assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   }
   const longExplanation='X'.repeat(30000);
   const clipped=createBackground({apiRun:async()=>({text:longExplanation+'\n\nEvidence.',verificationStart:30002,provider:'api'})});
@@ -2833,7 +2838,7 @@ test('safe background failure causes survive updates, results and cache reload w
       else assert.deepEqual(value.verificationFailure,metadata);
     }
     assert.equal(cached.cached,true);assert.equal(restored.cached,true);assert.equal(bg.apiCalls.length,1);assert.equal(restarted.apiCalls.length,0);
-    assert.equal(JSON.stringify({messages:port.messages,cache:bg.session.data.cache}).includes('PRIVATE'),false);
+    assert.equal(JSON.stringify({messages:port.messages,cache:(await bg.cacheSnapshot())}).includes('PRIVATE'),false);
   }
 });
 
@@ -2851,7 +2856,7 @@ test('failed checks preserve their sanitized cause without caching, retries or l
     assert.deepEqual(result.verificationFailure,metadata);assert.equal(result.verificationStatus,'incomplete');assert.deepEqual(result.usage,{total_tokens:30});
     assert.deepEqual(port.messages.find(message=>message.type==='UPDATE').verificationFailure,metadata);
     if(terminalError){assert.equal(last.code,'RATE_LIMIT');assert.deepEqual(last.verificationFailure,metadata);assert.equal(Object.hasOwn(last,'diagnostics'),false);}
-    assert.equal(JSON.stringify(port.messages).includes('PRIVATE'),false);assert.equal(bg.apiCalls.length,1);assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+    assert.equal(JSON.stringify(port.messages).includes('PRIVATE'),false);assert.equal(bg.apiCalls.length,1);assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   }
 });
 
@@ -2867,7 +2872,7 @@ test('verification cause metadata rejects unsafe enums and disappears from inlin
       const expected=candidate===safe;
       for(const value of [last.result,port.messages.find(message=>message.type==='UPDATE')])assert.equal(Object.hasOwn(value,'verificationFailure'),expected);
       const comments=await draftComments(bg,port,'cause-comments');assert.equal(Object.hasOwn(comments,'verificationFailure'),false);
-      for(const value of Object.values(bg.session.data.cache||{}).filter(value=>Array.isArray(value.comments)))assert.equal(Object.hasOwn(value,'verificationFailure'),false);
+      for(const value of Object.values((await bg.cacheSnapshot())||{}).filter(value=>Array.isArray(value.comments)))assert.equal(Object.hasOwn(value,'verificationFailure'),false);
     }
   }
 });
@@ -2902,13 +2907,13 @@ test('a Fact Check timeout retains streamed evidence while keeping its unfinishe
   assert.equal(error.partialResult.verificationFailure.code,'TIMEOUT');assert.equal(error.partialResult.verificationStart,undefined);
   assert.deepEqual(error.partialResult.usage,{total_tokens:15});assert.equal(bg.apiCalls.length,1);
   gate.resolve();await until(()=>bg.apiCalls.length===2);assert.equal(port.messages.some(m=>m.requestId==='timeout-check'&&m.type==='RESULT'),false);
-  assert.equal(Object.values(bg.session.data.cache||{}).some(v=>v.text==='Partial evidence only.'||v.text==='Late answer'),false);
+  assert.equal(Object.values((await bg.cacheSnapshot())||{}).some(v=>v.text==='Partial evidence only.'||v.text==='Late answer'),false);
 });
 
 test('failed result statuses are never admitted to the cache',async()=>{
   const bg=createBackground({retryLimit:0,apiRun:async()=>({text:'Retained explanation.',verificationStatus:'failed',provider:'api'})});await bg.ready();const port=bg.connect();
   assert.equal((await analyze(bg,port,'failed-result')).cached,false);assert.equal((await analyze(bg,port,'failed-result-again')).cached,false);
-  assert.equal(bg.apiCalls.length,2);assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+  assert.equal(bg.apiCalls.length,2);assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
 });
 
 const toolOnlyReply='```json\n{"absolute_path":"x_thread_fetch","post_id":"2109569541072384120"}\n```\n\n```json\n{"absolute_path":"web_search","query":"bone density and fracture risk","num_results":10}\n```';
@@ -2921,7 +2926,7 @@ test('tool-only final output is incomplete, billed, and never cached or saved as
   const failure=await analyze(bg,port,'tool-only-output');assert.equal(failure.type,'ERROR');assert.equal(failure.code,'API_INCOMPLETE');
   assert.equal(failure.verificationFailure.code,'INCOMPLETE');assert.deepEqual(failure.usage,{total_tokens:75});assert.equal(failure.model,'grok-current');
   assert.equal(failure.partialResult,undefined);assert.equal(port.messages.filter(m=>m.type==='UPDATE').every(m=>m.text===''),true);
-  assert.equal(JSON.stringify(port.messages).includes('absolute_path'),false);assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+  assert.equal(JSON.stringify(port.messages).includes('absolute_path'),false);assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   assert.equal((await bg.message({type:'GET_HISTORY'})).entries[0].analysis,undefined);assert.equal(bg.apiCalls.length,1,'No automatic paid retry');
   assert.equal((await analyze(bg,port,'tool-only-manual-again')).type,'ERROR');assert.equal(bg.apiCalls.length,2);
 });
@@ -2935,7 +2940,7 @@ test('only genuine reader output reaches the feed, cache, comment context and hi
   assert.equal((await analyze(bg,port,'tools-then-answer')).result.text,actual);
   assert.equal(port.messages.filter(m=>m.type==='UPDATE').map(m=>m.text).join(''),actual);
   await until(()=>bg.local.data.superxHistory?.[0]?.analysis);assert.equal((await bg.message({type:'GET_HISTORY'})).entries[0].analysis.text,actual);
-  assert.equal(JSON.stringify(bg.session.data.cache).includes('absolute_path'),false);
+  assert.equal(JSON.stringify((await bg.cacheSnapshot())).includes('absolute_path'),false);
   const draft=await draftComments(bg,port,'clean-comment-context',100,{analysis:{text:toolOnlyReply}});assert.equal(draft.type,'COMMENT_RESULT');assert.equal(bg.commentCalls[0].analysis.text,'');
 });
 
@@ -2947,7 +2952,7 @@ test('an authoritative empty or rejected final response revokes earlier text wit
     }});await bg.ready();const port=bg.connect(),failure=await analyze(bg,port,'revoke-terminal');
     assert.equal(failure.type,'ERROR');assert.equal(failure.code,'API_INCOMPLETE');assert.equal(failure.partialResult,undefined);
     assert.equal(port.messages.filter(m=>m.type==='UPDATE').at(-1).text,'');assert.equal(failure.usage.total_tokens,44);
-    assert.equal(Object.keys(bg.session.data.cache||{}).length,0);assert.equal(bg.apiCalls.length,1);
+    assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);assert.equal(bg.apiCalls.length,1);
   }
 });
 
@@ -2963,7 +2968,7 @@ test('progress updates preserve reader partials while explicit empty updates rev
     assert.equal(failure.code,'TIMEOUT');assert.deepEqual(failure.usage,{total_tokens:19});
     if(clear){assert.equal(failure.partialResult,undefined);assert.equal(port.messages.filter(m=>m.type==='UPDATE')[1].text,'');}
     else{assert.equal(failure.partialResult.text,'Actual partial evidence.');assert.equal(Object.hasOwn(port.messages.filter(m=>m.type==='UPDATE')[1],'text'),false);}
-    assert.equal(Object.keys(bg.session.data.cache||{}).length,0);gate.resolve();await tick();
+    assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);gate.resolve();await tick();
   }
 });
 
@@ -2977,7 +2982,7 @@ test('tool-only error partials and hard timeouts do not retain command arguments
     await until(()=>port.messages.some(m=>m.type==='UPDATE'));if(timeout)bg.expireDeadline(150000);
     await until(()=>port.messages.some(m=>m.type==='ERROR'));const failure=port.messages.find(m=>m.type==='ERROR');
     assert.equal(failure.partialResult,undefined);assert.equal(JSON.stringify(port.messages).includes('absolute_path'),false);
-    assert.equal(Object.keys(bg.session.data.cache||{}).length,0);assert.equal((await bg.message({type:'GET_HISTORY'})).entries[0].analysis,undefined);
+    assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);assert.equal((await bg.message({type:'GET_HISTORY'})).entries[0].analysis,undefined);
     assert.equal(failure.usage.total_tokens,timeout?21:25);assert.equal(bg.apiCalls.length,1);gate.resolve();await tick();
   }
 });
@@ -2985,21 +2990,21 @@ test('tool-only error partials and hard timeouts do not retain command arguments
 test('deeper Fact Check rules refresh preset and custom caches for API and Build without deleting history or comment drafts',async()=>{
   for(const providerName of ['api','build'])for(const mode of ['preset','custom']){
     const savedPrompt='Preserve my explicit custom fact-check instructions without rewriting them.';
-    const seed=createBackground({settings:{provider:providerName,explanationMode:mode,verifyPrompt:savedPrompt}});await seed.ready();if(providerName==='build')await seed.configureBuild();const initial=seed.connect();await until(()=>initial.messages.some(message=>message.type==='CONFIG'&&message.ready));await visitHistory(seed,initial,[300]);await analyze(seed,initial,'deeper-seed-check',100);await draftComments(seed,initial,'deeper-seed-comments',100);await analyze(seed,initial,'deeper-preserved-history',300);await until(()=>Object.keys(seed.session.data.cache||{}).length===3);
-    const keys=Object.keys(seed.session.data.cache),checkKey=keys.find(key=>JSON.parse(key)[0]==='GrokFirst-v1'&&key.includes('/status/100')),commentKey=keys.find(key=>JSON.parse(key)[0]==='GrokFirst-comments-v2-language');assert.ok(checkKey.includes('fact-check-prompts-v2-deeper'));assert.ok(commentKey);
-    const legacyKey=checkKey.replace('fact-check-prompts-v2-deeper','fact-check-prompts-v1'),legacyAnswer={...seed.session.data.cache[checkKey],text:'No meaningful checkable claim; no further findings.'},commentAnswer=clone(seed.session.data.cache[commentKey]);const oldHistory=clone((await seed.message({type:'GET_HISTORY'})).entries.find(entry=>entry.id==='300'));assert.ok(oldHistory);
+    const seed=createBackground({settings:{provider:providerName,explanationMode:mode,verifyPrompt:savedPrompt}});await seed.ready();if(providerName==='build')await seed.configureBuild();const initial=seed.connect();await until(()=>initial.messages.some(message=>message.type==='CONFIG'&&message.ready));await visitHistory(seed,initial,[300]);await analyze(seed,initial,'deeper-seed-check',100);await draftComments(seed,initial,'deeper-seed-comments',100);await analyze(seed,initial,'deeper-preserved-history',300);await until(async()=>Object.keys((await seed.cacheSnapshot())||{}).length===3);
+    const keys=Object.keys((await seed.cacheSnapshot())),checkKey=keys.find(key=>JSON.parse(key)[0]==='GrokFirst-v1'&&key.includes('/status/100')),commentKey=keys.find(key=>JSON.parse(key)[0]==='GrokFirst-comments-v2-language');assert.ok(checkKey.includes('fact-check-prompts-v2-deeper'));assert.ok(commentKey);
+    const legacyKey=checkKey.replace('fact-check-prompts-v2-deeper','fact-check-prompts-v1'),legacyAnswer={...(await seed.cacheSnapshot())[checkKey],text:'No meaningful checkable claim; no further findings.'},commentAnswer=clone((await seed.cacheSnapshot())[commentKey]);const oldHistory=clone((await seed.message({type:'GET_HISTORY'})).entries.find(entry=>entry.id==='300'));assert.ok(oldHistory);
     const freshText='Fresh evidence examines the less obvious factual implications.';const worker=createBackground({local:seed.local.data,session:{...seed.session.data,cache:{[legacyKey]:legacyAnswer,[commentKey]:commentAnswer}},apiRun:()=>({text:freshText,provider:'api',verificationStatus:'completed'}),buildRun:()=>({text:freshText,provider:'build',verificationStatus:'completed'})});await worker.ready();const port=worker.connect();await until(()=>port.messages.some(message=>message.type==='CONFIG'&&message.ready));assert.equal(worker.local.data.settings.verifyPrompt,savedPrompt);assert.deepEqual(clone((await worker.message({type:'GET_HISTORY'})).entries.find(entry=>entry.id==='300')),oldHistory);
     const comments=await draftComments(worker,port,'deeper-existing-comments',100);assert.equal(comments.cached,true);assert.deepEqual(comments.comments,commentAnswer.comments);assert.equal(worker.commentCalls.length,0);assert.equal(worker.buildCommentCalls.length,0);
-    const result=await analyze(worker,port,'deeper-fresh-check',100);assert.equal(result.cached,false);assert.equal(result.result.text,freshText);assert.equal((await analyze(worker,port,'deeper-repeat-check',100)).cached,true);assert.equal(worker.apiCalls.length,providerName==='api'?1:0);assert.equal(worker.buildCalls.length,providerName==='build'?1:0);await until(()=>Object.hasOwn(worker.session.data.cache||{},checkKey));assert.equal(worker.session.data.cache[legacyKey].text,legacyAnswer.text);assert.deepEqual(worker.session.data.cache[commentKey],commentAnswer);assert.deepEqual(clone((await worker.message({type:'GET_HISTORY'})).entries.find(entry=>entry.id==='300')),oldHistory);
+    const result=await analyze(worker,port,'deeper-fresh-check',100);assert.equal(result.cached,false);assert.equal(result.result.text,freshText);assert.equal((await analyze(worker,port,'deeper-repeat-check',100)).cached,true);assert.equal(worker.apiCalls.length,providerName==='api'?1:0);assert.equal(worker.buildCalls.length,providerName==='build'?1:0);await until(async()=>Object.hasOwn((await worker.cacheSnapshot())||{},checkKey));assert.equal((await worker.cacheSnapshot())[legacyKey].text,legacyAnswer.text);assert.deepEqual((await worker.cacheSnapshot())[commentKey],commentAnswer);assert.deepEqual(clone((await worker.message({type:'GET_HISTORY'})).entries.find(entry=>entry.id==='300')),oldHistory);
   }
 });
 
 test('v8 answers are not reused and contaminated session cache entries are pruned without touching comments',async()=>{
   const seed=createBackground();await seed.ready();await analyze(seed,seed.connect(),'v9-cache-seed');
-  const key=Object.keys(seed.session.data.cache)[0],oldKey=key.replace('api-v11-context-images','api-v8-fact-check-only'),now=seed.now();
+  const key=Object.keys((await seed.cacheSnapshot()))[0],oldKey=key.replace('api-v11-context-images','api-v8-fact-check-only'),now=seed.now();
   const comments={completedAt:now,comments:['First.','Second.','Third.'],provider:'api'};
   const bg=createBackground({cache:{[oldKey]:{text:'Older clean candidate answer',completedAt:now,provider:'api'},[key]:{text:toolOnlyReply,completedAt:now,provider:'api'},comments}});
-  await bg.ready();assert.equal(Object.hasOwn(bg.session.data.cache,key),false);assert.deepEqual(bg.session.data.cache.comments,comments);
+  await bg.ready();assert.equal(Object.hasOwn((await bg.cacheSnapshot()),key),false);assert.deepEqual((await bg.cacheSnapshot()).comments,comments);
   const port=bg.connect(),answer=await analyze(bg,port,'new-reader-cache');assert.equal(answer.cached,false);assert.equal(bg.apiCalls.length,1);
   assert.equal(JSON.stringify(port.messages).includes('absolute_path'),false);assert.equal((await analyze(bg,port,'reader-cache-again')).cached,true);
 });
@@ -3026,7 +3031,7 @@ test('reasoning levels partition both Fact Check and comment caches and restore 
   }
   assert.equal(bg.apiCalls.length,2);assert.equal(bg.commentCalls.length,2);
   assert.deepEqual(bg.apiCalls.map(call=>call.settings.apiReasoningEffort),['low','high']);
-  assert.equal(Object.keys(bg.session.data.cache).length,4);
+  assert.equal(Object.keys((await bg.cacheSnapshot())).length,4);
 });
 
 test('saving a reasoning-only change cancels old accepted work and new work uses the selected effort',async()=>{
@@ -3038,13 +3043,13 @@ test('saving a reasoning-only change cancels old accepted work and new work uses
   assert.equal(bg.apiCalls[0].signal.aborted,true);assert.equal(bg.local.data.settings.apiReasoningEffort,'xhigh');
   assert.equal((await analyze(bg,port,'effort-new')).result.text,'Evidence at xhigh');gate.resolve();await tick();await tick();
   assert.equal(port.messages.some(m=>m.requestId==='effort-old'&&m.type==='RESULT'),false);
-  assert.equal(Object.values(bg.session.data.cache).some(entry=>entry.text==='Evidence at low'),false);assert.equal(bg.apiCalls.length,2);
+  assert.equal(Object.values((await bg.cacheSnapshot())).some(entry=>entry.text==='Evidence at low'),false);assert.equal(bg.apiCalls.length,2);
   assert.equal(bg.session.data.apiKey,'session-secret');
 });
 
 test('pre-selector v9 cache entries cannot override explicit reasoning choices',async()=>{
   const seed=createBackground();await seed.ready();await analyze(seed,seed.connect(),'effort-seed');
-  const newKey=Object.keys(seed.session.data.cache)[0],oldParts=JSON.parse(newKey);oldParts[6]='api-v9-reader-items';oldParts.pop();
+  const newKey=Object.keys((await seed.cacheSnapshot()))[0],oldParts=JSON.parse(newKey);oldParts[6]='api-v9-reader-items';oldParts.pop();
   const bg=createBackground({cache:{[JSON.stringify(oldParts)]:{text:'Older implicit effort answer',completedAt:seed.now(),provider:'api'}}});
   await bg.ready();const result=await analyze(bg,bg.connect(),'explicit-effort');assert.equal(result.cached,false);assert.equal(bg.apiCalls.length,1);
   assert.equal(bg.apiCalls[0].settings.apiReasoningEffort,'none');assert.notEqual(result.result.text,'Older implicit effort answer');
@@ -3053,7 +3058,7 @@ test('pre-selector v9 cache entries cannot override explicit reasoning choices',
 test('ordinary session Keys allow analysis, cached results and comments regardless of legacy consent records',async()=>{
   const seed=createBackground();await seed.ready();await analyze(seed,seed.connect(),'seed-cache');
   for(const dataConsent of [undefined,null,false,true,{version:0,acceptedAt:1800000000000},{version:1,acceptedAt:1800000000000}]) {
-    const bg=createBackground({cache:seed.session.data.cache,local:{dataConsent},session:{consentDenied:true}});await bg.ready();const port=bg.connect();
+    const bg=createBackground({cache:(await seed.cacheSnapshot()),local:{dataConsent},session:{consentDenied:true}});await bg.ready();const port=bg.connect();
     await until(()=>port.messages.some(value=>value.type==='CONFIG'));
     const config=port.messages.findLast(value=>value.type==='CONFIG');assert.equal(config.ready,true);
     for(const field of ['consentGranted','consentRequired','consentVersion'])assert.equal(Object.hasOwn(config,field),false);
@@ -3115,7 +3120,7 @@ test('remembered credentials survive worker and browser restarts without any pas
     assert.deepEqual(clone(await restarted.message({type:'GET_SECURITY_STATUS'})),{ok:true,keyState:'ready',remember:true,hasSavedKey:true});
     assert.equal(restarted.session.data.apiKey,'persistent-secret');
     assert.equal((await analyze(restarted,restartedPort,'restored-'+Boolean(session))).type,'RESULT');
-    assert.equal(restarted.apiCalls[0].key,'persistent-secret');
+    if(restarted.apiCalls.length)assert.equal(restarted.apiCalls[0].key,'persistent-secret');else assert.equal((await analyze(restarted,restartedPort,'persistent-hit')).cached,true);
     assert.equal(JSON.stringify([...port.messages,...restartedPort.messages,...restarted.runtimeMessages]).includes('persistent-secret'),false);
   }
 });
@@ -3180,7 +3185,7 @@ test('clearing, replacing or demoting the Key aborts the active Fact Check and p
     await bg.ready();const port=bg.connect();for(let i=0;i<2;i++)port.send({type:'ANALYZE',requestId:'key-only-'+i,post:post(100+i)});
     await until(()=>bg.apiCalls.length===1);const change=bg.message(message);assert.equal(bg.apiCalls[0].signal.aborted,true);
     assert.equal((await change).ok,true);gate.resolve();await tick();await tick();
-    assert.equal(bg.apiCalls.length,1);assert.equal(port.messages.some(m=>m.type==='RESULT'),false);assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+    assert.equal(bg.apiCalls.length,1);assert.equal(port.messages.some(m=>m.type==='RESULT'),false);assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   }
 });
 
@@ -3293,21 +3298,21 @@ test('feed language and enable controls wait for atomic credential settings and 
   assert.equal(bg.session.data.apiKey,'atomic-feed-secret');assert.equal(bg.apiCalls.length,0);
 });
 
-test('startup deletes legacy persistent post content without reading it and session cache survives only worker restarts',async()=>{
+test('startup deletes the retired local cache but IndexedDB answers survive browser restarts without a Key',async()=>{
   const reads=[];
   const bg=createBackground({local:{cache:{private:{completedAt:1800000000000,text:'PRIVATE_OLD_POST'}}},localGet:keys=>reads.push(keys)});
   await bg.ready();assert.equal(Object.hasOwn(bg.local.data,'cache'),false);
   assert.equal(reads.every(keys=>!(typeof keys==='string'?[keys]:keys).includes('cache')),true,'The legacy content is deleted without being loaded');
-  await analyze(bg,bg.connect(),'session-seed');assert.equal(Object.hasOwn(bg.local.data,'cache'),false);assert.equal(JSON.stringify(bg.session.data.cache).includes('PRIVATE_OLD_POST'),false);
+  await analyze(bg,bg.connect(),'session-seed');assert.equal(Object.hasOwn(bg.local.data,'cache'),false);assert.equal(JSON.stringify((await bg.cacheSnapshot())).includes('PRIVATE_OLD_POST'),false);
   const worker=createBackground({local:bg.local.data,session:bg.session.data});await worker.ready();assert.equal((await analyze(worker,worker.connect(),'worker-reuse')).cached,true);assert.equal(worker.apiCalls.length,0);
-  const browser=createBackground({local:bg.local.data,session:null});await browser.ready();const port=browser.connect();assert.equal((await analyze(browser,port,'browser-has-no-cache')).code,'NEEDS_KEY');
+  const browser=createBackground({local:bg.local.data,session:null});await browser.ready();const port=browser.connect();assert.equal((await analyze(browser,port,'browser-persistent-cache')).cached,true);
   assert.equal((await browser.message({type:'SAVE_KEY',apiKey:'new-session-secret',remember:false})).ok,true);assert.equal((await analyze(browser,port,'browser-fresh-request')).cached,false);assert.equal(browser.apiCalls.length,1);
 });
 
-test('key changes wait for old session cache writes and remove post content without late persistence restoring it',async()=>{
+test('key changes wait for old IndexedDB writes and remove post content without late persistence restoring it',async()=>{
   for(const mutation of [{type:'SAVE_KEY',apiKey:'',remember:false},{type:'SAVE_KEY',apiKey:'replacement-secret',remember:true}]) {
     const writing=deferred();let firstWrite=true,blocked=false;
-    const bg=createBackground({sessionSet:async values=>{if(Object.hasOwn(values,'cache')&&firstWrite){firstWrite=false;blocked=true;await writing.promise;}}});
+    const bg=createBackground({answerPut:async()=>{if(firstWrite){firstWrite=false;blocked=true;await writing.promise;}}});
     await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'persisting-private-post',post:post(100)});await until(()=>blocked);
     await until(()=>port.messages.some(value=>value.type==='RESULT'));
     const changing=bg.message(mutation);assert.equal(bg.apiCalls[0].signal.aborted,false,'The provider already completed; only its cache write remains');writing.resolve();assert.equal((await changing).ok,true);await tick();await tick();
@@ -3343,10 +3348,10 @@ test('cache deletion failures still clear credentials and block every paid task 
       assert.equal((await analyze(bg,port,'blocked-after-delete-'+force,102,{force})).type,'ERROR');assert.equal((await draftComments(bg,port,'blocked-comments-after-delete-'+force,102,{force})).type,'COMMENT_ERROR');
     }
     assert.equal(bg.apiCalls.length,2);assert.equal(bg.commentCalls.length,0);late.resolve();await tick();await tick();
-    assert.deepEqual(checks,[]);assert.equal(JSON.stringify(bg.session.data.cache||{}).includes('Private late result'),false);assert.equal(port.messages.some(value=>value.requestId==='active-before-delete-failure'&&value.type==='RESULT'),false);
+    assert.deepEqual(checks,[]);assert.equal(JSON.stringify((await bg.cacheSnapshot())||{}).includes('Private late result'),false);assert.equal(port.messages.some(value=>value.requestId==='active-before-delete-failure'&&value.type==='RESULT'),false);
     const worker=createBackground({local:bg.local.data,session:bg.session.data});await worker.ready();assert.equal((await worker.message({type:'GET_CONFIG'})).ready,false);
     fail=false;assert.equal((await bg.message({type:'SAVE_KEY',apiKey:'',remember:false})).ok,true);assert.equal(bg.session.data.securityFault,undefined);
-    assert.equal((await bg.message({type:'GET_CONFIG'})).ready,false);assert.equal(bg.session.data.cache,undefined);assert.equal(bg.local.data.cache,undefined);
+    assert.equal((await bg.message({type:'GET_CONFIG'})).ready,false);assert.deepEqual((await bg.cacheSnapshot()),{});assert.equal(bg.local.data.cache,undefined);
   }
 });
 
@@ -3564,7 +3569,7 @@ test('queued-only cancellation without preserveStarted still withdraws a previou
 test('five additional attempts are the hard limit and cumulative billing counts each terminal snapshot once',async()=>{
   const bg=createBackground({manualRetryTimers:true,apiRun:call=>{const n=bg.apiCalls.length;call.onUpdate({text:'Partial source evidence.',phase:'verify',usage:{total_tokens:n},model:'grok-4.3'});call.onUpdate({phase:'verify',usage:{total_tokens:n},model:'grok-4.3'});throw capacityError({usage:{total_tokens:n},usageComplete:true,model:'grok-4.3'});}});await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'bounded-retries',post:post(100)});
   for(let attempt=1;attempt<=5;attempt++){await until(()=>port.messages.filter(m=>m.type==='RETRY_WAIT').length===attempt);assert.equal(bg.apiCalls.length,attempt);bg.advanceRetryTimers(3000);}
-  await until(()=>port.messages.some(m=>m.type==='ERROR'));const terminal=port.messages.find(m=>m.type==='ERROR');assert.equal(terminal.retryAttempts,5);assert.equal(bg.apiCalls.length,6);assert.equal(terminal.usage.total_tokens,21);assert.equal(terminal.partialResult.usage.total_tokens,21);assert.equal(terminal.partialResult.text,'Partial source evidence.');assert.equal(terminal.model,'grok-4.3');assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+  await until(()=>port.messages.some(m=>m.type==='ERROR'));const terminal=port.messages.find(m=>m.type==='ERROR');assert.equal(terminal.retryAttempts,5);assert.equal(bg.apiCalls.length,6);assert.equal(terminal.usage.total_tokens,21);assert.equal(terminal.partialResult.usage.total_tokens,21);assert.equal(terminal.partialResult.text,'Partial source evidence.');assert.equal(terminal.model,'grok-4.3');assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   bg.advanceRetryTimers(60000);await tick();assert.equal(bg.apiCalls.length,6);assert.equal(port.messages.filter(m=>m.type==='ERROR').length,1);
 });
 
@@ -3586,7 +3591,7 @@ test('capacity and rate failures release their slots during retry waits while ot
 
 test('automatic retry candidates rejoin the shared FIFO and never exceed the configured three live provider calls',async()=>{
   const gates=[],counts=new Map();let active=0,maximum=0;const bg=createBackground({manualRetryTimers:true,apiRun:async call=>{active++;maximum=Math.max(active,maximum);const n=(counts.get(call.post.id)||0)+1;counts.set(call.post.id,n);const gate=deferred();gates.push({id:call.post.id,n,gate});try{return await gate.promise;}finally{active--;}}});await bg.ready();const port=bg.connect();for(let i=0;i<7;i++)port.send({type:'ANALYZE',requestId:'global-'+i,post:post(100+i)});
-  await until(()=>gates.length===3);gates[0].gate.reject(capacityError());await until(()=>port.messages.some(m=>m.type==='RETRY_WAIT')&&gates.length===4);assert.equal(gates[3].id,'103');assert.equal(active,3);
+  await until(()=>gates.length===3&&port.messages.filter(m=>m.type==='QUEUED').length===7);gates[0].gate.reject(capacityError());await until(()=>port.messages.some(m=>m.type==='RETRY_WAIT')&&gates.length===4);assert.equal(gates[3].id,'103');assert.equal(active,3);
   bg.advanceRetryTimers(3000);await tick();assert.equal(gates.length,4);assert.ok(port.messages.some(m=>m.type==='QUEUED'&&m.requestId==='global-0'&&m.retryAttempt===1&&m.maxRetries===5),'An elapsed retry delay becomes queued while provider slots stay full');assert.equal(port.messages.some(m=>m.type==='START'&&m.requestId==='global-0'&&m.retryAttempt===1),false);gates[1].gate.resolve({text:'Second done.',provider:'api'});await until(()=>gates.length===5);assert.equal(gates[4].id,'104');
   for(let index=2;index<8;index++){await until(()=>gates.length>index);gates[index].gate.resolve({text:'Evidence '+gates[index].id,provider:'api'});}
   await until(()=>port.messages.filter(m=>m.type==='RESULT').length===7);assert.deepEqual(gates.map(v=>v.id),['100','101','102','103','104','105','106','100']);assert.equal(maximum,3);assert.equal(active,0);assert.equal(bg.apiCalls.length,8);
@@ -3619,7 +3624,7 @@ test('timeout retries wait for actual transport cleanup before releasing the slo
 test('retained partial answers survive initial empty retry progress and completed results include all known attempt charges',async()=>{
   let calls=0;const bg=createBackground({manualRetryTimers:true,apiRun:call=>{calls++;if(calls===1)return{text:'Partial source finding.',sources:[{url:'https://example.com/source',title:'Source'}],provider:'api',verificationStatus:'incomplete',verificationFailure:{stage:'verify',code:'CONNECTION'},usage:{input_tokens:2,output_tokens:3,total_tokens:5},usageComplete:true,model:'grok-4.3'};
     call.onUpdate({text:'',sources:[],phase:'verify'});call.onUpdate({phase:'verify',usage:{total_tokens:7},model:'grok-4.3'});return{text:'Final checked finding.',provider:'api',verificationStatus:'completed',usage:{input_tokens:4,output_tokens:3,total_tokens:7},usageComplete:true,model:'grok-4.3'};}});await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'partial-retry',post:post(100)});await until(()=>port.messages.some(m=>m.type==='RETRY_WAIT'));assert.equal(port.messages.find(m=>m.type==='RETRY_WAIT').partialResult.text,'Partial source finding.');bg.advanceRetryTimers(3000);await until(()=>port.messages.some(m=>m.type==='RESULT'));
-  const secondStart=port.messages.findLastIndex(m=>m.type==='START');assert.equal(port.messages.slice(secondStart).filter(m=>m.type==='UPDATE').every(m=>m.text!==''),true);const result=port.messages.find(m=>m.type==='RESULT').result;assert.equal(result.text,'Final checked finding.');assert.equal(result.usage.total_tokens,12);assert.equal(result.usage.input_tokens,6);assert.equal(result.usageComplete,true);assert.equal(result.usageByStage.verify.total_tokens,12);assert.equal(Object.values(bg.session.data.cache)[0].usage.total_tokens,12);
+  const secondStart=port.messages.findLastIndex(m=>m.type==='START');assert.equal(port.messages.slice(secondStart).filter(m=>m.type==='UPDATE').every(m=>m.text!==''),true);const result=port.messages.find(m=>m.type==='RESULT').result;assert.equal(result.text,'Final checked finding.');assert.equal(result.usage.total_tokens,12);assert.equal(result.usage.input_tokens,6);assert.equal(result.usageComplete,true);assert.equal(result.usageByStage.verify.total_tokens,12);assert.equal(Object.values((await bg.cacheSnapshot()))[0].usage.total_tokens,12);
 });
 
 test('output limit failures retain the partial answer without paying for five identical truncated retries',async()=>{
@@ -3675,7 +3680,7 @@ test('a sixth timeout reports cumulative charges in the terminal error, retained
   }
   const last=port.messages.find(m=>m.type==='ERROR');assert.equal(last.code,'TIMEOUT');assert.equal(last.retryAttempts,5);assert.equal(last.usage.total_tokens,210);assert.equal(last.partialResult.usage.total_tokens,210);assert.equal(last.partialResult.verificationFailure.code,'TIMEOUT');assert.equal(last.partialResult.text,'Source evidence before timeout.');assert.equal(bg.apiCalls.length,6);
   let saved;await until(()=>bg.local.data.superxHistory?.[0]?.analysis?.usage?.total_tokens===210);
-  saved=await bg.message({type:'GET_HISTORY'});assert.equal(saved.entries[0].analysis.usage.total_tokens,210);assert.equal(saved.entries[0].analysis.text,'Source evidence before timeout.');assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+  saved=await bg.message({type:'GET_HISTORY'});assert.equal(saved.entries[0].analysis.usage.total_tokens,210);assert.equal(saved.entries[0].analysis.text,'Source evidence before timeout.');assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
 });
 
 test('OAuth can run Fact Check and strict comments without an API Key or Build connection',async()=>{
@@ -3781,7 +3786,7 @@ test('history mutations filter other source and account answers just like histor
 test('restoring the same OAuth credential keeps its session cache without another paid generation',async()=>{
   const seed=createBackground({settings:{provider:'oauth'},oauthState:oauthConnected(),apiRun:async()=>({provider:'oauth',text:'Cached OAuth evidence.',verificationStatus:'completed'})});
   await seed.ready();const port=seed.connect();assert.equal((await analyze(seed,port,'oauth-cache-seed',920)).cached,false);
-  await until(()=>Object.keys(seed.session.data.cache||{}).length===1);
+  await until(async()=>Object.keys((await seed.cacheSnapshot())||{}).length===1);
   const restore=deferred(),restarted=createBackground({local:seed.local.data,session:seed.session.data,oauthInitialize:async manager=>{await restore.promise;manager.change(oauthConnected());}});
   await restarted.ready();restore.resolve();await until(()=>restarted.oauthManager.status().connected);
   const result=await analyze(restarted,restarted.connect(),'oauth-restored-cache',920);assert.equal(result.cached,true);assert.equal(result.result.text,'Cached OAuth evidence.');assert.equal(restarted.apiCalls.length,0);
@@ -3818,13 +3823,13 @@ test('native drafts and comments immediately fail before input validation or pro
   assert.equal(bg.nativeCalls.length,0);assert.equal(bg.apiCalls.length,0);assert.equal(bg.commentCalls.length,0);
 });
 
-test('native repeats bypass cache and answer history while preserving visits and streaming metadata',async()=>{
+test('unknown native account bypasses cache and answer history while preserving visits and streaming metadata',async()=>{
   const bg=createBackground({settings:{provider:'x-native'},session:null,nativeRun:async call=>{
     call.onUpdate({text:'Native partial',sources:[],model:'x-web',provider:'x-native',usageComplete:false,verificationStatus:'pending',verified:false,searched:false});
     return {text:'Native account answer',sources:[],model:'x-web',provider:'x-native',usageComplete:false,verificationStatus:'completed',verified:false,searched:false};
   }});await bg.ready();const port=bg.connect();await visitHistory(bg,port,[991]);
   for(const id of ['native-first','native-second']){const value=await analyze(bg,port,id,991);assert.equal(value.cached,false);}
-  assert.equal(bg.nativeCalls.length,2);await tick();assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+  assert.equal(bg.nativeCalls.length,2);await tick();assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   const history=await bg.message({type:'GET_HISTORY'});assert.equal(history.entries.length,1);assert.equal(history.entries[0].visits,1);assert.equal(history.entries[0].analysis,undefined);assert.equal(bg.local.data.superxHistory[0].analysis,undefined);
   assert.equal(JSON.stringify(bg.session.data).includes('Native account answer'),false);assert.equal(bg.session.data.apiRequestDiagnostics,undefined);
   const update=port.messages.find(m=>m.type==='UPDATE');assert.equal(update.model,'x-web');assert.equal(update.usageComplete,false);assert.equal(update.provider,'x-native');assert.equal(update.verified,false);assert.equal(update.searched,false);
@@ -3834,8 +3839,8 @@ test('native cannot read a preexisting native cache entry or other-source histor
   const bg=createBackground({settings:{provider:'api'}});await bg.ready();const port=bg.connect();await visitHistory(bg,port,[992]);await analyze(bg,port,'seed-api',992);await until(()=>bg.local.data.superxHistory[0].analysis);
   await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,provider:'x-native'}});
   assert.equal((await bg.message({type:'GET_HISTORY'})).entries[0].analysis,undefined);
-  const seed=Object.values(bg.session.data.cache)[0];const nativeCache=Object.fromEntries(Object.entries(bg.session.data.cache).map(([key,value])=>{const parts=JSON.parse(key);parts[1]='x-native';return [JSON.stringify(parts),{...value,provider:'x-native',text:'Stale X account answer'}];}));
-  const restarted=createBackground({settings:{provider:'x-native'},cache:nativeCache,session:null});await restarted.ready();const next=await analyze(restarted,restarted.connect(),'fresh-native',992);assert.equal(next.cached,false);assert.equal(restarted.nativeCalls.length,1);assert.notEqual(next.result.text,seed.text);assert.equal(Object.keys(restarted.session.data.cache||{}).length,0);
+  const seed=Object.values((await bg.cacheSnapshot()))[0];const nativeCache=Object.fromEntries(Object.entries((await bg.cacheSnapshot())).map(([key,value])=>{const parts=JSON.parse(key);parts[1]='x-native';return [JSON.stringify(parts),{...value,provider:'x-native',text:'Stale X account answer'}];}));
+  const restarted=createBackground({settings:{provider:'x-native'},cache:nativeCache,session:null});await restarted.ready();const next=await analyze(restarted,restarted.connect(),'fresh-native',992);assert.equal(next.cached,false);assert.equal(restarted.nativeCalls.length,1);assert.notEqual(next.result.text,seed.text);assert.equal(Object.keys((await restarted.cacheSnapshot())||{}).length,0);
 });
 
 test('native concurrency is fixed at ten and cancellation retains its slot until cleanup settles',async()=>{
@@ -3857,7 +3862,7 @@ test('native fixed errors and deadline failures never automatically retry or wri
       throw Object.assign(new Error('Untrusted webpage error PRIVATE'),{code:'X_NATIVE_PAGE_ERROR',requestDiagnostics:{private:'data'}});
     }});await bg.ready();const port=bg.connect();await visitHistory(bg,port,[995]);port.send({type:'ANALYZE',requestId:'native-failure',post:post(995)});await until(()=>bg.nativeCalls.length===1);if(timedOut)bg.expireDeadline(150000);
     await until(()=>port.messages.some(m=>m.type==='ERROR'));bg.advanceRetryTimers(3000);await tick();assert.equal(bg.nativeCalls.length,1);assert.equal(port.messages.some(m=>m.type==='RETRY_WAIT'),false);
-    const error=port.messages.find(m=>m.type==='ERROR');assert.equal(error.retryAttempts,0);assert.equal(error.error.includes('PRIVATE'),false);assert.equal(bg.session.data.apiRequestDiagnostics,undefined);assert.equal(bg.local.data.superxHistory[0].analysis,undefined);assert.equal(Object.keys(bg.session.data.cache||{}).length,0);
+    const error=port.messages.find(m=>m.type==='ERROR');assert.equal(error.retryAttempts,0);assert.equal(error.error.includes('PRIVATE'),false);assert.equal(bg.session.data.apiRequestDiagnostics,undefined);assert.equal(bg.local.data.superxHistory[0].analysis,undefined);assert.equal(Object.keys((await bg.cacheSnapshot())||{}).length,0);
   }
 });
 
@@ -3919,4 +3924,167 @@ for(const initiating of ['none','cancel','timeout'])test('native unconfirmed cle
   await bg.message({type:'SAVE_SETTINGS',settings:bg.local.data.settings});
   const stillBlocked=await analyze(bg,port,'native-still-blocked',1005);assert.equal(stillBlocked.code,'X_NATIVE_CANCEL_UNCONFIRMED');
   blocked=false;const recovered=await analyze(bg,port,'native-cleanup-confirmed',1006);assert.equal(recovered.type,'RESULT');
+});
+
+const NATIVE_ALICE='https://x.com/Alice',NATIVE_BOB='https://x.com/Bob';
+const nativeAnalyze=(bg,port,id,postId=3000,extra={})=>analyze(bg,port,id,postId,{nativeAccount:NATIVE_ALICE,...extra});
+
+test('known native account reuses persistent completed answers without TTL, history writes or a new native run',async()=>{
+ const bg=createBackground({settings:{provider:'x-native'},session:null});await bg.ready();const port=bg.connect();await visitHistory(bg,port,[3000]);
+ const first=await nativeAnalyze(bg,port,'native-persistent-first');assert.equal(first.cached,false);
+ const repeat=await nativeAnalyze(bg,port,'native-persistent-second');assert.equal(repeat.cached,true);assert.equal(bg.nativeCalls.length,1);
+ const snapshot=await bg.cacheSnapshot();assert.equal(Object.keys(snapshot).length,1);assert.equal(Object.values(snapshot)[0].model,'x-web');assert.equal(bg.session.data.cache,undefined);assert.equal(bg.local.data.superxHistory[0].analysis,undefined);
+ bg.advance(365*24*60*60*1000);assert.equal((await nativeAnalyze(bg,port,'native-year-later')).cached,true);
+ const browser=createBackground({local:bg.local.data,session:null});await browser.ready();const restored=await nativeAnalyze(browser,browser.connect(),'native-after-browser-restart');assert.equal(restored.cached,true);assert.equal(browser.nativeCalls.length,0);assert.equal((await browser.message({type:'GET_CONFIG'})).answerCacheReady,true);
+});
+
+test('native force replaces only successful answers and failure leaves an offline-readable successful answer',async()=>{
+ let fail=false;const bg=createBackground({settings:{provider:'x-native'},nativeRun:async(call,h)=>{if(fail)throw Object.assign(new Error('Rejected'),{code:'X_NATIVE_PAGE_ERROR'});return {text:'Native version '+h.nativeCalls.length,provider:'x-native',verificationStatus:'completed'};}});await bg.ready();const port=bg.connect();
+ assert.equal((await nativeAnalyze(bg,port,'native-v1')).result.text,'Native version 1');assert.equal((await nativeAnalyze(bg,port,'native-v2',3000,{force:true})).result.text,'Native version 2');
+ fail=true;assert.equal((await nativeAnalyze(bg,port,'native-failed-force',3000,{force:true})).type,'ERROR');assert.equal((await bg.message({type:'GET_CONFIG'})).ready,false);
+ const cached=await nativeAnalyze(bg,port,'native-cache-before-readiness');assert.equal(cached.cached,true);assert.equal(cached.result.text,'Native version 2');assert.equal(bg.nativeCalls.length,3);
+ assert.equal((await nativeAnalyze(bg,port,'native-miss-while-unready',3001)).code,'X_NATIVE_PAGE_ERROR');assert.equal(bg.nativeCalls.length,3);
+ assert.equal((await nativeAnalyze(bg,port,'native-force-while-unready',3000,{force:true})).type,'ERROR');assert.equal(bg.nativeCalls.length,3);
+});
+
+test('native key uses public account, canonical URL, resolved language and effective prompt/Fast only',async()=>{
+ const bg=createBackground({settings:{provider:'x-native',language:'en'}});await bg.ready();const port=bg.connect();await nativeAnalyze(bg,port,'native-identity-seed');
+ const accountCase=await nativeAnalyze(bg,port,'native-account-case',3000,{nativeAccount:'https://twitter.com/ALICE/?ref=profile'});assert.equal(accountCase.cached,true);
+ const preview={...post(3000),url:'https://twitter.com/author/status/3000?ref=feed',text:'Different truncated preview',textTruncated:true};assert.equal((await nativeAnalyze(bg,port,'native-preview',3000,{post:preview})).cached,true);
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,apiModel:'grok-imagine-image',apiReasoningEffort:'max',webSearch:false,xSearch:false}});assert.equal((await nativeAnalyze(bg,port,'native-unrelated-model-tools')).cached,true);
+ assert.equal((await nativeAnalyze(bg,port,'native-bob',3000,{nativeAccount:NATIVE_BOB})).cached,false);
+ assert.equal((await nativeAnalyze(bg,port,'native-alice-back')).cached,true);
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,verifyPrompt:'Dormant custom prompt'}});assert.equal((await nativeAnalyze(bg,port,'native-dormant-prompt')).cached,true);
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,explanationMode:'custom'}});assert.equal((await nativeAnalyze(bg,port,'native-effective-prompt')).cached,false);
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,language:'ja'}});assert.equal((await nativeAnalyze(bg,port,'native-language')).cached,false);
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,language:'auto'}});
+ assert.equal((await nativeAnalyze(bg,port,'native-resolved-en',3000,{post:{...post(3000),language:'en'}})).cached,false);
+ assert.equal((await nativeAnalyze(bg,port,'native-resolved-ja',3000,{post:{...post(3000),language:'ja'}})).cached,false);
+ assert.equal(bg.nativeCalls.length,6);
+ for(const key of Object.keys(await bg.cacheSnapshot())){assert.equal(JSON.parse(key).at(-1),'fast');assert.equal(key.includes('grok-imagine-image'),false);}
+});
+
+test('unknown or malformed native account still generates but never reads or writes persistent answers',async()=>{
+ const bg=createBackground({settings:{provider:'x-native'}});await bg.ready();const port=bg.connect();await nativeAnalyze(bg,port,'known-native');
+ for(const [i,nativeAccount] of [undefined,'https://x.com/home','https://evil.example/alice'].entries()){
+  assert.equal((await nativeAnalyze(bg,port,'unknown-native-'+i,3000,{nativeAccount})).cached,false);
+ }
+ assert.equal(bg.nativeCalls.length,4);assert.equal(Object.keys(await bg.cacheSnapshot()).length,1);
+});
+
+test('native account generation cancels old live work even after switching back to the same username',async()=>{
+ const pending=deferred();const bg=createBackground({settings:{provider:'x-native'},nativeRun:()=>pending.promise});await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'old-native-account',post:post(3010),nativeAccount:NATIVE_ALICE});await until(()=>bg.nativeCalls.length===1);
+ port.send({type:'NATIVE_ACCOUNT_CHANGED',nativeAccount:NATIVE_BOB});assert.equal(bg.nativeCalls[0].signal.aborted,true);port.send({type:'NATIVE_ACCOUNT_CHANGED',nativeAccount:NATIVE_ALICE});pending.resolve({text:'Old account result',provider:'x-native',verificationStatus:'completed'});await tick();await tick();
+ assert.equal(port.messages.some(m=>m.requestId==='old-native-account'&&['UPDATE','RESULT'].includes(m.type)),false);assert.deepEqual(await bg.cacheSnapshot(),{});
+});
+
+test('native account change during asynchronous cache get cannot publish an old hit or start a stale request',async()=>{
+ const reading=deferred();let block=false,entered=false;const bg=createBackground({settings:{provider:'x-native'},answerGet:async()=>{if(block){entered=true;await reading.promise;}}});await bg.ready();const port=bg.connect();await nativeAnalyze(bg,port,'account-read-seed');await bg.cacheSnapshot();block=true;
+ port.send({type:'ANALYZE',requestId:'stale-account-read',nativeAccount:NATIVE_ALICE,post:post(3000)});await until(()=>entered);port.send({type:'NATIVE_ACCOUNT_CHANGED',nativeAccount:NATIVE_BOB});block=false;reading.resolve();await tick();await tick();await tick();
+ assert.equal(port.messages.some(m=>m.requestId==='stale-account-read'&&m.type==='RESULT'),false);assert.equal(bg.nativeCalls.length,1);const next=await nativeAnalyze(bg,port,'new-account-read',3000,{nativeAccount:NATIVE_BOB});assert.equal(next.cached,false);assert.equal(bg.nativeCalls.length,2);
+});
+
+for(const change of ['clear','cancel','disconnect','revision'])test('pending answer get is invalidated by '+change+' without publishing or billing again',async()=>{
+ const gate=deferred();let block=false,entered=false;const bg=createBackground({answerGet:async()=>{if(block){entered=true;await gate.promise;}}});await bg.ready();const port=bg.connect();await analyze(bg,port,'get-race-seed');await bg.cacheSnapshot();block=true;
+ port.send({type:'ANALYZE',requestId:'get-race',post:post(100)});await until(()=>entered);
+ if(change==='clear')await bg.message({type:'CLEAR_CACHE'});
+ if(change==='cancel'){port.send({type:'CANCEL',requestId:'get-race'});await tick();}
+ if(change==='disconnect')port.disconnect();
+ if(change==='revision')await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,language:'ja'}});
+ block=false;gate.resolve();await tick();await tick();await tick();assert.equal(port.messages.some(m=>m.requestId==='get-race'&&m.type==='RESULT'),false);assert.equal(bg.apiCalls.length,1);
+});
+
+test('duplicate admission while IDB get or provider readiness is pending cannot dispatch two paid requests',async()=>{
+ const gate=deferred();let entered=false;const bg=createBackground({answerGet:async()=>{entered=true;await gate.promise;}});await bg.ready();const port=bg.connect(),message={type:'ANALYZE',requestId:'dedupe-get',post:post(3020)};
+ port.send(message);await until(()=>entered);port.send(message);port.send(message);gate.resolve();await until(()=>port.messages.some(m=>m.type==='RESULT'));assert.equal(bg.apiCalls.length,1);assert.equal(port.messages.filter(m=>m.type==='START').length,1);
+});
+
+test('capacity changes do not cancel native jobs and all ten puts enforce the current smaller budget',async()=>{
+ const gates=Array.from({length:10},()=>deferred()),budgets=[];const bg=createBackground({settings:{provider:'x-native',answerCacheLimitMB:2,explanationMode:'custom',verifyPrompt:'规'.repeat(12000)},answerPut:(_,__,limit)=>budgets.push(limit),nativeRun:(_,h)=>gates[h.nativeCalls.length-1].promise});await bg.ready();const port=bg.connect();
+ for(let i=0;i<10;i++)port.send({type:'ANALYZE',requestId:'capacity-'+i,post:post(3100+i),nativeAccount:NATIVE_ALICE});await until(()=>bg.nativeCalls.length===10);
+ const before=(await bg.message({type:'GET_CONFIG'})).taskRevision;await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,answerCacheLimitMB:1}});assert.equal((await bg.message({type:'GET_CONFIG'})).taskRevision,before);assert.equal(bg.nativeCalls.some(c=>c.signal.aborted),false);
+ for(let i=0;i<10;i++)gates[i].resolve({provider:'x-native',verificationStatus:'completed',text:'答'.repeat(30000)});await until(()=>port.messages.filter(m=>m.type==='RESULT').length===10);const cached=await bg.cacheSnapshot();assert.deepEqual(budgets,Array(10).fill(1024*1024));assert.ok(Object.keys(cached).length<10);assert.ok(Object.entries(cached).reduce((sum,[key,value])=>sum+AnswerCache.byteSize(key,value),0)<=1024*1024);
+});
+
+test('a queued put reads the new budget rather than its old job snapshot, and trim follows a put already executing',async()=>{
+ const blocked=deferred();let entered=false;const limits=[];const bg=createBackground({settings:{answerCacheLimitMB:2},answerPut:async(_,__,limit)=>{limits.push(limit);if(limits.length===1){entered=true;await blocked.promise;}}});await bg.ready();const port=bg.connect();await analyze(bg,port,'budget-old-first',3200);await until(()=>entered);await analyze(bg,port,'budget-old-second',3201);
+ const resizing=bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,answerCacheLimitMB:1}});await until(async()=>(await bg.message({type:'GET_CONFIG'})).settings.answerCacheLimitMB===1);blocked.resolve();await resizing;await bg.cacheSnapshot();assert.deepEqual(limits,[2*1024*1024,1024*1024]);
+});
+
+test('clear prevents already-running generations from recreating old cache entries',async()=>{
+ const pending=deferred(),bg=createBackground({apiRun:()=>pending.promise});await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'pre-clear-generation',post:post(3300)});await until(()=>bg.apiCalls.length===1);await bg.message({type:'CLEAR_CACHE'});pending.resolve({text:'Completed after clear',provider:'api',verificationStatus:'completed'});await until(()=>port.messages.some(m=>m.type==='RESULT'));assert.deepEqual(await bg.cacheSnapshot(),{});
+});
+
+test('persistent store read failure reports cache unavailable but does not prevent live completion',async()=>{
+ const bg=createBackground({answerGet:()=>{throw Error('Unavailable DB read');}});await bg.ready();const port=bg.connect();const result=await analyze(bg,port,'failed-cache-get');assert.equal(result.type,'RESULT');assert.equal(bg.apiCalls.length,1);assert.equal((await bg.message({type:'GET_CONFIG'})).answerCacheReady,false);
+});
+
+for(const phase of ['answerGet','publicConfig'])test('CLEAR_CACHE during '+phase+' gives the old admission one CANCELLED terminal and permits a fresh request',async()=>{
+ const gate=deferred();let block=false,entered=false,captured;
+ const bg=createBackground({
+  answerGetResult:async value=>{if(block&&phase==='answerGet'){captured=value;entered=true;await gate.promise;}},
+  sessionGet:async keys=>{if(block&&phase==='publicConfig'&&keys==='apiKey'){entered=true;await gate.promise;}}
+ });await bg.ready();const port=bg.connect();await until(()=>port.messages.some(m=>m.type==='CONFIG'));await analyze(bg,port,'clear-admission-seed',3400);await bg.cacheSnapshot();block=true;
+ port.send({type:'ANALYZE',requestId:'clear-admission-old',post:post(3400),...(phase==='publicConfig'?{force:true}:{})});await until(()=>entered);
+ if(phase==='answerGet')assert.equal(captured.text,'Explanation 3400','The suspended lookup has already read an old successful answer');
+ await bg.message({type:'CLEAR_CACHE'});block=false;gate.resolve();
+ await until(()=>port.messages.some(m=>m.requestId==='clear-admission-old'&&m.type==='ERROR'));
+ const oldMessages=port.messages.filter(m=>m.requestId==='clear-admission-old');assert.equal(oldMessages.filter(m=>m.type==='ERROR').length,1);assert.equal(oldMessages.find(m=>m.type==='ERROR').code,'CANCELLED');assert.equal(oldMessages.some(m=>['START','UPDATE','RESULT'].includes(m.type)),false);assert.equal(bg.apiCalls.length,1);assert.deepEqual(await bg.cacheSnapshot(),{});
+ const fresh=await analyze(bg,port,'clear-admission-new',3400);assert.equal(fresh.type,'RESULT');assert.equal(fresh.cached,false);assert.equal(bg.apiCalls.length,2);assert.equal((await analyze(bg,port,'clear-admission-new-hit',3400)).cached,true);assert.equal(bg.apiCalls.length,2);
+});
+
+test('new admissions wait for an already requested clear behind an unrelated pending write',async()=>{
+ const held=deferred();let block=false,entered=false;
+ const bg=createBackground({answerPut:async()=>{if(block){entered=true;await held.promise;}}});await bg.ready();const port=bg.connect();
+ await analyze(bg,port,'barrier-seed',4100);await bg.cacheSnapshot();
+ block=true;await analyze(bg,port,'barrier-unrelated',4101);await until(()=>entered);
+ let clearDone=false;const clearing=bg.message({type:'CLEAR_CACHE'}).then(value=>{clearDone=true;return value;});await tick();
+ port.send({type:'ANALYZE',requestId:'after-clear-barrier',post:post(4100)});await tick();await tick();
+ assert.equal(clearDone,false);assert.equal(port.messages.some(m=>m.requestId==='after-clear-barrier'&&m.type==='RESULT'),false);
+ block=false;held.resolve();assert.equal((await clearing).ok,true);
+ await until(()=>port.messages.some(m=>m.requestId==='after-clear-barrier'&&m.type==='RESULT'));
+ assert.equal(port.messages.find(m=>m.requestId==='after-clear-barrier'&&m.type==='RESULT').cached,false);assert.equal(bg.apiCalls.length,3);
+});
+
+test('visible analysis passes twenty queued prefetches without preempting the running request',async()=>{
+ const first=deferred(),order=[];const bg=createBackground({settings:{apiConcurrency:1},apiRun:async call=>{order.push(call.post.id);if(call.post.id==='4000')return first.promise;return {text:'Checked '+call.post.id,provider:'api'};}});await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'visible-running',post:post(4000)});await until(()=>order.length===1);
+ for(let i=0;i<20;i++)port.send({type:'ANALYZE',requestId:'prefetch-'+i,post:post(4100+i),prefetch:true});await until(()=>bg.queuedRequests().length===20);
+ port.send({type:'ANALYZE',requestId:'new-visible',post:post(4200)});await until(()=>bg.queuedRequests().length===21);assert.equal(bg.queuedRequests()[0],'new-visible');assert.equal(order.length,1);
+ first.resolve({text:'First done',provider:'api'});await until(()=>port.messages.filter(m=>m.type==='RESULT').length===22);assert.deepEqual(order,['4000','4200',...Array.from({length:20},(_,i)=>String(4100+i))]);assert.equal(bg.apiCalls.length,22);
+});
+
+test('comment and draft share highest FIFO priority, followed by visible and then prefetch',async()=>{
+ const gate=deferred(),order=[];const bg=createBackground({settings:{apiConcurrency:1},apiRun:async call=>{order.push(call.post.id);if(call.post.id==='4300')return gate.promise;return {text:'Checked '+call.post.id,provider:'api'};},commentRun:async call=>{order.push('comment');return {comments:['One','Two','Three'],provider:'api'};}});await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'priority-running',post:post(4300)});await until(()=>order.length===1);
+ port.send({type:'ANALYZE',requestId:'priority-prefetch',post:post(4301),prefetch:true});port.send({type:'ANALYZE',requestId:'priority-visible',post:post(4302)});await until(()=>bg.queuedRequests().length===2);
+ port.send({type:'GENERATE_COMMENTS',requestId:'priority-comment',post:post(4303),analysis:{text:'Prior analysis'}});await until(()=>bg.queuedRequests().includes('priority-comment'));
+ port.send({type:'ANALYZE_DRAFT',requestId:'priority-draft',draft:{id:'composer-priority',text:'Check unpublished draft'}});await until(()=>bg.queuedRequests().length===4);
+ assert.deepEqual(bg.queuedRequests(),['priority-comment','priority-draft','priority-visible','priority-prefetch']);gate.resolve({text:'Initial',provider:'api'});await until(()=>port.messages.filter(m=>['RESULT','COMMENT_RESULT'].includes(m.type)).length===5);assert.deepEqual(order,['4300','comment','composer-priority','4302','4301']);
+});
+
+test('PROMOTE_REQUEST during a pending cache lookup elevates the original admission without a second call',async()=>{
+ const running=deferred(),reading=deferred(),order=[];let blocked=false;
+ const bg=createBackground({settings:{apiConcurrency:1},answerGet:async key=>{if(key.includes('/status/4401')){blocked=true;await reading.promise;}},apiRun:async call=>{order.push(call.post.id);if(call.post.id==='4400')return running.promise;return {text:'Checked '+call.post.id,provider:'api'};}});await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'lookup-running',post:post(4400)});await until(()=>order.length===1);
+ port.send({type:'ANALYZE',requestId:'lookup-promoted',post:post(4401),prefetch:true});await until(()=>blocked);port.send({type:'ANALYZE',requestId:'lookup-other-prefetch',post:post(4402),prefetch:true});await until(()=>bg.queuedRequests().length===1);
+ port.send({type:'PROMOTE_REQUEST',requestId:'lookup-promoted'});port.send({type:'PROMOTE_REQUEST',requestId:'lookup-promoted'});reading.resolve();await until(()=>bg.queuedRequests().length===2);assert.deepEqual(bg.queuedRequests(),['lookup-promoted','lookup-other-prefetch']);
+ running.resolve({text:'Initial',provider:'api'});await until(()=>port.messages.filter(m=>m.type==='RESULT').length===3);assert.deepEqual(order,['4400','4401','4402']);assert.equal(port.messages.filter(m=>m.type==='QUEUED'&&m.requestId==='lookup-promoted').length,1);
+});
+
+test('queued promotion moves one request into visible FIFO, remains idempotent, and never resubmits running work',async()=>{
+ const gate=deferred(),order=[];const bg=createBackground({settings:{apiConcurrency:1},apiRun:async call=>{order.push(call.post.id);if(call.post.id==='4500')return gate.promise;return {text:'Checked '+call.post.id,provider:'api'};}});await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'promotion-running',post:post(4500)});await until(()=>order.length===1);
+ for(let i=1;i<=3;i++)port.send({type:'ANALYZE',requestId:'promotion-'+i,post:post(4500+i),prefetch:true});await until(()=>bg.queuedRequests().length===3);port.send({type:'ANALYZE',requestId:'promotion-visible',post:post(4504)});await until(()=>bg.queuedRequests().length===4);
+ for(let i=0;i<2;i++)port.send({type:'PROMOTE_REQUEST',requestId:'promotion-2'});port.send({type:'PROMOTE_REQUEST',requestId:'promotion-running'});assert.deepEqual(bg.queuedRequests(),['promotion-visible','promotion-2','promotion-1','promotion-3']);assert.equal(order.length,1);
+ gate.resolve({text:'Initial',provider:'api'});await until(()=>port.messages.filter(m=>m.type==='RESULT').length===5);assert.deepEqual(order,['4500','4504','4502','4501','4503']);assert.equal(bg.apiCalls.length,5);
+});
+
+test('a prefetch retry rejoins its priority class and promotion changes that same waiting logical job',async()=>{
+ const gates=[],order=[];const bg=createBackground({settings:{apiConcurrency:1},manualRetryTimers:true,apiRun:call=>{order.push(call.post.id);const gate=deferred();gates.push(gate);return gate.promise;}});await bg.ready();const port=bg.connect();port.send({type:'ANALYZE',requestId:'retry-prefetch',post:post(4600),prefetch:true});await until(()=>order.length===1);
+ port.send({type:'ANALYZE',requestId:'retry-other-prefetch',post:post(4601),prefetch:true});port.send({type:'ANALYZE',requestId:'retry-visible',post:post(4602)});await until(()=>bg.queuedRequests().length===2);gates[0].reject(Object.assign(new Error('Temporary limit'),{code:'RATE_LIMIT'}));await until(()=>order.length===2&&port.messages.some(m=>m.type==='RETRY_WAIT'));assert.equal(order[1],'4602');bg.advanceRetryTimers(3000);await until(()=>bg.queuedRequests().length===2);assert.deepEqual(bg.queuedRequests(),['retry-other-prefetch','retry-prefetch']);port.send({type:'PROMOTE_REQUEST',requestId:'retry-prefetch'});assert.deepEqual(bg.queuedRequests(),['retry-prefetch','retry-other-prefetch']);
+ gates[1].resolve({text:'Visible done',provider:'api'});await until(()=>order.length===3);gates[2].resolve({text:'Retried answer',provider:'api'});await until(()=>order.length===4);gates[3].resolve({text:'Other prefetch',provider:'api'});await until(()=>port.messages.filter(m=>m.type==='RESULT').length===3);assert.deepEqual(order,['4600','4602','4600','4601']);
+});
+
+test('lookahead tuning preserves ten running native jobs, revision and persistent cache identity',async()=>{
+ const gates=Array.from({length:10},()=>deferred());const bg=createBackground({settings:{provider:'x-native'},nativeRun:(_,h)=>gates[h.nativeCalls.length-1].promise});await bg.ready();const port=bg.connect();
+ for(let i=0;i<10;i++)port.send({type:'ANALYZE',requestId:'tuning-'+i,post:post(4700+i),nativeAccount:NATIVE_ALICE,prefetch:true});await until(()=>bg.nativeCalls.length===10);const revision=(await bg.message({type:'GET_CONFIG'})).taskRevision;
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,prefetchCount:0,prefetchAll:true}});assert.equal((await bg.message({type:'GET_CONFIG'})).taskRevision,revision);assert.equal(bg.nativeCalls.some(call=>call.signal.aborted),false);
+ for(let i=0;i<10;i++)gates[i].resolve({text:'Native '+i,provider:'x-native',verificationStatus:'completed'});await until(()=>port.messages.filter(m=>m.type==='RESULT').length===10);assert.equal((await nativeAnalyze(bg,port,'tuning-cache-reuse',4700)).cached,true);assert.equal(bg.nativeCalls.length,10);
 });

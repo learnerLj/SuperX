@@ -129,7 +129,7 @@
           try{port.postMessage({type:'NATIVE_PING',nonce:task.nonce});}
           catch{cancel(failure('X_NATIVE_INTERRUPTED'));}
         },20000);
-        try{port.postMessage({type:'NATIVE_RUN',nonce:task.nonce,prompt:prompt(post,settings)});}
+        try{port.postMessage({type:'NATIVE_RUN',nonce:task.nonce,prompt:prompt(post,settings),nativeAccount:settings.nativeAccount||''});}
         catch{finish(false,failure('X_NATIVE_INTERRUPTED'));}
       });
     }

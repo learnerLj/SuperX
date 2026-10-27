@@ -264,6 +264,9 @@
     buildModel: 'grok-4.3',
     buildReasoningEffort: 'none',
     apiConcurrency: 3,
+    answerCacheLimitMB: 1024,
+    prefetchCount: 5,
+    prefetchAll: false,
     apiVerification: 'only',
     webSearch: true,
     xSearch: true,
@@ -361,6 +364,9 @@
       analysisDefaultsVersion: DEFAULT_SETTINGS.analysisDefaultsVersion,
       dwellMs: !currentDefaults&&dwell===0?DEFAULT_SETTINGS.dwellMs:dwell,
       // The old per-session cap and launch-spacing controls remain retired.
+      answerCacheLimitMB: boundedNumber(value.answerCacheLimitMB,DEFAULT_SETTINGS.answerCacheLimitMB,1,1048576),
+      prefetchCount: boundedNumber(value.prefetchCount,DEFAULT_SETTINGS.prefetchCount,0,100),
+      prefetchAll: typeof value.prefetchAll==='boolean'?value.prefetchAll:DEFAULT_SETTINGS.prefetchAll,
       maxPerSession: 0,
       cooldownMs: 0,
       language: validLanguage(language) ? language : DEFAULT_SETTINGS.language,
@@ -392,6 +398,15 @@
     };
   }
 
+  function normalizeNativeAccount(value) {
+    if(typeof value!=='string')return '';
+    try{
+      const url=new URL(value),match=url.pathname.match(/^\/([A-Za-z0-9_]{1,15})\/?$/);
+      if(url.protocol!=='https:'||!['x.com','twitter.com'].includes(url.hostname)||url.username||url.password||url.port||!match)return '';
+      const name=match[1].toLowerCase();
+      return ['home','explore','notifications','messages','search','settings','compose','i','grok','login','logout'].includes(name)?'':name;
+    }catch{return '';}
+  }
   function canonicalPostUrl(href) {
     if (typeof href !== 'string' || !href.trim()) return null;
     try {
@@ -728,5 +743,5 @@
     clear() { this.items.clear(); }
   }
 
-  return Object.freeze({ LANGUAGES, API_MODELS, modelProfile, isNonTextGenerationModel, reasoningEffort, buildReasoningEffort, oauthReasoningEffort, providerModel, providerEffort, apiFailureProviderCode, AUTO_RETRY_DELAY_MS, AUTO_RETRY_LIMIT, autoRetryDecision, sanitizedRequestDiagnostics, DEFAULT_SETTINGS, DEFAULT_PROMPTS, MAX_PROMPT_LENGTH, normalizePrompt, readerOutput, explanationMode, normalizeSettings, resolvePostLanguage, canonicalPostUrl, extractPost, extractPostContext, postFingerprint, nativePostIdentity, apiPostIdentity, visibilityEligibility, BoundedPostQueue });
+  return Object.freeze({ LANGUAGES, API_MODELS, modelProfile, isNonTextGenerationModel, reasoningEffort, buildReasoningEffort, oauthReasoningEffort, providerModel, providerEffort, apiFailureProviderCode, AUTO_RETRY_DELAY_MS, AUTO_RETRY_LIMIT, autoRetryDecision, sanitizedRequestDiagnostics, DEFAULT_SETTINGS, DEFAULT_PROMPTS, MAX_PROMPT_LENGTH, normalizePrompt, readerOutput, explanationMode, normalizeSettings, normalizeNativeAccount, resolvePostLanguage, canonicalPostUrl, extractPost, extractPostContext, postFingerprint, nativePostIdentity, apiPostIdentity, visibilityEligibility, BoundedPostQueue });
 });

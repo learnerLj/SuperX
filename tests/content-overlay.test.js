@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const crypto = require('node:crypto');
 const core = require('../extension/feed-core.js');
 const nativePanelFactory = require('../extension/native-panel.js');
+const feedScheduler = require('../extension/feed-scheduler.js');
 const layout = require('../extension/overlay-layout.js');
 const ui = require('../extension/ui-i18n.js');
 
@@ -248,7 +249,7 @@ function fixture({postCount=2,connectError=null,historyAck=true}={}) {
   const location = { hash: '', pathname: '/home', href: 'https://x.com/home',reload(){reloads++;} };
   class ClockDate extends Date { static now() { return now; } }
   const context = vm.createContext({
-    SuperXNativePanel:nativePanelFactory,
+    SuperXNativePanel:nativePanelFactory,SuperXFeedScheduler:feedScheduler,
     document, window, location, URL, URLSearchParams, AbortController, crypto, Date: ClockDate,
     innerWidth: 1440, innerHeight: 960,
     XGrokCore: { ...core, extractPost: article => {postExtractions++;return article.postData ? ({ ...article.postData }) : null;} }, GrokFirstOverlayLayout: layout,
@@ -287,7 +288,7 @@ function fixture({postCount=2,connectError=null,historyAck=true}={}) {
     replacePort(){const previous=port;port=makePort();return previous;},
     runTimeouts(maxDelay=3000){for(const [id,timer] of [...timeouts])if(timer.delay<=maxDelay){timeouts.delete(id);timer.fn();}harness.flush();},
     pendingTimeouts(){return [...timeouts.values()].map(timer=>timer.delay);},
-    configure(overrides = {}) { port.onMessage.emit({ type: 'CONFIG', settings: { ...core.DEFAULT_SETTINGS, provider: 'api', dwellMs: 0, ...overrides }, ready: true, used: 0 }); harness.flush(); },
+    configure(overrides = {}) { port.onMessage.emit({ type: 'CONFIG', settings: { ...core.DEFAULT_SETTINGS, provider: 'api', dwellMs: 0, prefetchCount:0, prefetchAll:false, ...overrides }, ready: true, used: 0 }); harness.flush(); },
     flush() {
       for (let pass = 0; pass < 8; pass++) {
         const timers = [...timeouts].filter(([, timer]) => timer.delay<=160&&timer.at<=now); const pendingFrames = [...frames];
@@ -3700,4 +3701,228 @@ test('x-native keeps streamed right-column findings and hides comment generation
   const card=page.cards()[0];assert.equal(card.testShadow.querySelector('.answer').textContent,'Native streamed finding');
   page.port.onMessage.emit({type:'RESULT',requestId:request.requestId,result:{text:'Native final finding',sources:[{url:'https://nasa.gov/',title:'NASA'}],provider:'x-native',model:'x-web',usageComplete:false,verificationStatus:'completed'}});page.flush();
   assert.equal(card.testShadow.querySelector('.answer').textContent,'Native final finding');assert.equal(card.testShadow.querySelector('.generate-comments').hidden,true);assert.match(card.testShadow.querySelector('.sources').textContent,/NASA/);
+});
+
+test('post cache lookup remains reachable when model connection is unavailable',()=>{
+  const page=fixture({postCount:1});
+  page.port.onMessage.emit({type:'CONFIG',settings:{...core.DEFAULT_SETTINGS,provider:'api',dwellMs:0},ready:false,answerCacheReady:true});
+  page.flush();page.intersect();page.tick();
+  const request=page.port.sent.find(message=>message.type==='ANALYZE');assert.ok(request);
+  page.port.onMessage.emit({type:'RESULT',requestId:request.requestId,cached:true,result:{text:'Persisted evidence.',verificationStatus:'unverified',sources:[]}});page.flush();
+  assert.ok(page.nodes.some(node=>node.textContent.includes('Persisted evidence.')));
+  assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,1);
+});
+
+test('cache budget changes preserve an active request and its answer',()=>{
+  const page=fixture({postCount:1});page.configure();page.intersect();page.tick();
+  const request=page.port.sent.find(message=>message.type==='ANALYZE');assert.ok(request);
+  const cancellations=page.port.sent.filter(message=>message.type==='CANCEL'||message.type==='CANCEL_ALL').length;
+  page.configure({answerCacheLimitMB:10});
+  assert.equal(page.port.sent.filter(message=>message.type==='CANCEL'||message.type==='CANCEL_ALL').length,cancellations);
+  page.port.onMessage.emit({type:'RESULT',requestId:request.requestId,result:{text:'Original request completed.',verificationStatus:'unverified',sources:[]}});page.flush();
+  assert.ok(page.nodes.some(node=>node.textContent.includes('Original request completed.')));
+});
+
+test('native account change discards old displayed and late answers',()=>{
+  const page=fixture({postCount:1}),originalQuery=page.document.querySelector;
+  let href='https://x.com/Account_A';
+  page.document.querySelector=selector=>selector==='a[data-testid="AppTabBar_Profile_Link"]'?{href}:originalQuery(selector);
+  page.configure({provider:'x-native'});page.intersect();page.tick();
+  const request=page.port.sent.find(message=>message.type==='ANALYZE');assert.equal(request.nativeAccount,'https://x.com/account_a');
+  href='https://x.com/Account_B';
+  page.port.onMessage.emit({type:'RESULT',requestId:request.requestId,result:{text:'Old account answer.',verificationStatus:'unverified',sources:[]}});page.flush();
+  assert.ok(page.port.sent.some(message=>message.type==='NATIVE_ACCOUNT_CHANGED'&&message.nativeAccount==='https://x.com/account_b'));
+  assert.ok(!page.nodes.some(node=>node.textContent.includes('Old account answer.')));
+});
+
+test('an old account native dispatch is rejected before opening Grok',()=>{
+ const page=fixture({postCount:1}),originalQuery=page.document.querySelector;
+ page.document.querySelector=selector=>selector==='a[data-testid="AppTabBar_Profile_Link"]'?{href:'https://x.com/account_b'}:originalQuery(selector);
+ page.configure({provider:'x-native'});page.tick();
+ page.port.onMessage.emit({type:'NATIVE_RUN',nonce:'old-account-dispatch',prompt:'Old private context',nativeAccount:'account_a'});
+ assert.ok(page.port.sent.some(message=>message.type==='NATIVE_EVENT'&&message.nonce==='old-account-dispatch'&&message.kind==='CLOSED'));
+ assert.equal(page.nativeHooks.run,0);
+});
+
+function analyzeMessages(page){return page.port.sent.filter(message=>message.type==='ANALYZE');}
+function completeFeedRequest(page,request,text='Preloaded finding.'){
+ page.port.onMessage.emit({type:'RESULT',requestId:request.requestId,cached:false,result:{text,verificationStatus:'unverified',sources:[]}});page.flush();
+}
+test('default five lookahead posts form a fixed window and completion does not drain the timeline',()=>{
+ assert.equal(core.DEFAULT_SETTINGS.prefetchCount,5);assert.equal(core.DEFAULT_SETTINGS.prefetchAll,false);
+ const page=fixture({postCount:20});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const visibleRequests=analyzeMessages(page).filter(m=>!m.prefetch),preloaded=analyzeMessages(page).filter(m=>m.prefetch);
+ assert.equal(visibleRequests.length,4);assert.deepEqual(preloaded.map(m=>m.post.id),['104','105','106','107','108']);
+ for(const request of [...visibleRequests,...preloaded])completeFeedRequest(page,request);
+ page.tick(5000);assert.equal(analyzeMessages(page).length,9,'Completed results keep their spatial positions in the window');
+ assert.ok(page.port.sent.filter(m=>m.type==='HISTORY_VISIT').every(m=>m.posts.every(post=>Number(post.id)<104)),'Offscreen preloading never records a visit');
+});
+test('lookahead supports zero, a custom count, and all already mounted posts',()=>{
+ for(const [settings,count] of [[{prefetchCount:0},0],[{prefetchCount:2},2],[{prefetchCount:0,prefetchAll:true},16]]) {
+  const page=fixture({postCount:20});page.configure(settings);page.intersect();page.tick();
+  assert.equal(analyzeMessages(page).filter(m=>m.prefetch).length,count);
+  assert.equal(analyzeMessages(page).filter(m=>!m.prefetch).length,4);
+ }
+});
+test('a queued preloaded post entering the viewport is promoted without a second request',()=>{
+ const page=fixture({postCount:10});page.configure({prefetchCount:2});page.intersect();page.tick();
+ const request=analyzeMessages(page).find(m=>m.post.id==='104');assert.equal(request.prefetch,true);
+ page.articles[4].rect={...page.articles[4].rect,top:700,bottom:900};page.tick();
+ assert.equal(analyzeMessages(page).filter(m=>m.post.id==='104').length,1);
+ assert.equal(page.port.sent.filter(m=>m.type==='PROMOTE_REQUEST'&&m.requestId===request.requestId).length,1);
+ assert.equal(page.port.sent.some(m=>m.type==='CANCEL_IF_QUEUED'&&m.requestId===request.requestId),false);
+ completeFeedRequest(page,request);page.tick();assert.equal(analyzeMessages(page).filter(m=>m.post.id==='104').length,1);
+ assert.ok(page.port.sent.filter(m=>m.type==='HISTORY_VISIT').some(m=>m.posts.some(post=>post.id==='104')));
+});
+test('reducing lookahead to zero cancels only unstarted work and keeps the active answer',()=>{
+ const page=fixture({postCount:12});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const preloaded=analyzeMessages(page).filter(m=>m.prefetch);page.port.onMessage.emit({type:'START',requestId:preloaded[0].requestId});page.flush();
+ const offset=page.port.sent.length;page.configure({prefetchCount:0});page.tick();
+ const messages=page.port.sent.slice(offset);assert.equal(messages.some(m=>m.type==='CANCEL_ALL'),false);
+ assert.equal(messages.some(m=>m.type.startsWith('CANCEL')&&m.requestId===preloaded[0].requestId),false);
+ for(const request of preloaded.slice(1))assert.ok(messages.some(m=>m.type==='CANCEL_IF_QUEUED'&&m.requestId===request.requestId&&m.preserveStarted));
+ completeFeedRequest(page,preloaded[0],'Running prefetch survived.');assert.ok(page.nodes.some(node=>node.textContent.includes('Running prefetch survived.')));
+});
+test('lookahead skips promoted posts and reuses existing viewed answers independently of history',()=>{
+ const page=fixture({postCount:12});page.articles[4].postData.isPromoted=true;
+ page.configure({prefetchCount:2});page.intersect();page.tick();assert.deepEqual(analyzeMessages(page).filter(m=>m.prefetch).map(m=>m.post.id),['105','106']);
+ page.port.onMessage.emit({type:'HISTORY_CONFIG',enabled:false,epoch:2});
+ page.articles[2].rect={...page.articles[2].rect,top:990,bottom:1200};page.tick();
+ assert.equal(analyzeMessages(page).filter(m=>m.post.id==='102').length,1,'A viewed post moved below is not re-prefetched');
+});
+test('scrolling preserves queued posts that remain in the fixed preload window',()=>{
+ const page=fixture({postCount:12});page.configure({prefetchCount:5,dwellMs:1000});page.intersect();page.tick(1000);
+ const preloaded=analyzeMessages(page).filter(m=>m.prefetch);assert.equal(preloaded.length,5);
+ page.document.emit('scroll',{target:page.primary});page.tick();
+ assert.ok(preloaded.every(request=>!page.port.sent.some(m=>m.type==='CANCEL_IF_QUEUED'&&m.requestId===request.requestId)));
+});
+
+test('preloading stops new dispatch when hidden, paused, collapsed or on an unsupported page',()=>{
+ for(const mode of ['hidden','paused','collapsed','unsupported']){
+  const page=fixture({postCount:20});
+  if(mode==='hidden')page.document.hidden=true;
+  if(mode==='unsupported'){page.location.pathname='/messages';page.location.href='https://x.com/messages';}
+  if(mode==='collapsed')page.port.onMessage.emit({type:'RAIL_VISIBILITY',collapsed:true});
+  page.configure({prefetchCount:5,enabled:mode!=='paused'});page.intersect();page.tick(2000);
+  assert.equal(analyzeMessages(page).length,0,mode);
+ }
+});
+test('a completed preloaded answer is reused after entering the viewport',()=>{
+ const page=fixture({postCount:10});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const request=analyzeMessages(page).find(m=>m.post.id==='104');completeFeedRequest(page,request,'Already prepared Markdown.');
+ page.articles[4].rect={...page.articles[4].rect,top:500,bottom:700};page.tick();
+ assert.equal(analyzeMessages(page).filter(m=>m.post.id==='104').length,1);
+ assert.ok(page.nodes.some(node=>node.textContent.includes('Already prepared Markdown.')));
+});
+
+test('a promoted prefetch retains conditional cancellation when START is crossing the port',()=>{
+ const page=fixture({postCount:10});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const request=analyzeMessages(page).find(m=>m.post.id==='104');page.articles[4].rect={...page.articles[4].rect,top:700,bottom:900};page.tick();
+ assert.ok(page.port.sent.some(m=>m.type==='PROMOTE_REQUEST'&&m.requestId===request.requestId));
+ page.port.onMessage.emit({type:'RAIL_VISIBILITY',collapsed:true});page.flush();
+ const cancellations=page.port.sent.filter(m=>m.requestId===request.requestId&&m.type.startsWith('CANCEL'));
+ assert.ok(cancellations.length);assert.ok(cancellations.every(m=>m.type==='CANCEL_IF_QUEUED'&&m.preserveStarted));
+ page.port.onMessage.emit({type:'START',requestId:request.requestId});completeFeedRequest(page,request,'Accepted before collapse.');
+ assert.ok(page.nodes.some(node=>node.textContent.includes('Accepted before collapse.')));
+});
+test('posts viewed without analysis while paused or unavailable are not skipped when preloading resumes',()=>{
+ for(const mode of ['paused','unavailable','collapsed']) {
+  const page=fixture({postCount:12});
+  if(mode==='collapsed')page.port.onMessage.emit({type:'RAIL_VISIBILITY',collapsed:true});
+  page.port.onMessage.emit({type:'CONFIG',settings:{...core.DEFAULT_SETTINGS,provider:'api',enabled:mode!=='paused',dwellMs:0},ready:mode!=='unavailable',answerCacheReady:false});page.flush();page.intersect();page.tick();
+  page.articles[2].rect={...page.articles[2].rect,top:970,bottom:1200};
+  if(mode==='collapsed')page.port.onMessage.emit({type:'RAIL_VISIBILITY',collapsed:false});
+  page.configure({prefetchCount:5});page.tick();
+  assert.equal(analyzeMessages(page).filter(m=>m.post.id==='102'&&m.prefetch).length,1,mode);
+ }
+});
+test('started prefetch retry chains are protected on scroll, DOM removal, and modal pause',()=>{
+ for(const mode of ['scroll','unmount','modal']) {
+  const page=fixture({postCount:12});page.configure({prefetchCount:5,dwellMs:1000});page.intersect();page.tick(1000);
+  const request=analyzeMessages(page).find(m=>m.post.id==='104');page.port.onMessage.emit({type:'START',requestId:request.requestId});
+  page.port.onMessage.emit({type:'RETRY_WAIT',requestId:request.requestId,retryAttempt:1,maxRetries:5,retryDelayMs:3000,code:'RATE_LIMIT',error:'Temporary failure'});page.flush();
+  if(mode==='scroll'){page.articles[4].rect={...page.articles[4].rect,top:-900,bottom:-700};page.document.emit('scroll',{target:page.primary});page.tick();}
+  if(mode==='unmount'){page.articles[4].remove();page.mutate();}
+  if(mode==='modal'){const dialog=page.document.createElement('div');dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');page.document.body.append(dialog);page.mutate();}
+  const cancellations=page.port.sent.filter(m=>m.requestId===request.requestId&&m.type.startsWith('CANCEL'));
+  assert.ok(cancellations.every(m=>m.type==='CANCEL_IF_QUEUED'&&m.preserveStarted),mode);
+ }
+});
+
+test('a briefly exposed but unanalysed post remains inside the next five preloads',()=>{
+ const page=fixture({postCount:15});page.configure({prefetchCount:0,dwellMs:1000});page.intersect();
+ page.articles[4].rect={...page.articles[4].rect,top:959,bottom:1239};page.tick(10);
+ assert.equal(analyzeMessages(page).some(m=>m.post.id==='104'),false,'A one-pixel glimpse has not met the dwell delay');
+ page.articles[4].rect={...page.articles[4].rect,top:1000,bottom:1280};
+ page.configure({prefetchCount:5,dwellMs:0});page.tick();
+ assert.deepEqual(analyzeMessages(page).filter(m=>m.prefetch).map(m=>m.post.id),['104','105','106','107','108']);
+});
+
+test('completed nearest posts occupy the window instead of allowing gaps to be filled farther away',()=>{
+ const page=fixture({postCount:15});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const original=analyzeMessages(page).filter(m=>m.prefetch);assert.equal(original.length,5);
+ for(const request of original)completeFeedRequest(page,request,'Cached or completed earlier.');
+ // Briefly expose one completed post with preloading off, then return it below the fold.
+ page.configure({prefetchCount:0});
+ page.articles[4].rect={...page.articles[4].rect,top:959,bottom:1239};page.tick();
+ page.articles[4].rect={...page.articles[4].rect,top:1000,bottom:1280};page.configure({prefetchCount:5});page.tick(1000);
+ assert.deepEqual(analyzeMessages(page).filter(m=>m.prefetch).map(m=>m.post.id),['104','105','106','107','108']);
+});
+
+test('preload window advances during continuous scrolling without waiting for visible-post dwell',()=>{
+ const page=fixture({postCount:20});page.configure({prefetchCount:5,dwellMs:1000});page.intersect();page.tick();
+ assert.deepEqual(analyzeMessages(page).filter(m=>m.prefetch).map(m=>m.post.id),['104','105','106','107','108']);
+ for(let step=0;step<2;step++){
+  for(const article of page.articles)article.rect={...article.rect,top:article.rect.top-280,bottom:article.rect.bottom-280};
+  page.document.emit('scroll',{target:page.primary});page.tick(100);
+  assert.ok(analyzeMessages(page).some(m=>m.prefetch&&m.post.id===String(109+step)),'A newly available row starts before the 1-second visible dwell');
+ }
+ assert.equal(analyzeMessages(page).some(m=>m.post.id==='100'),false,'Visible dwell still resets while scrolling');
+});
+test('duplicate mounted cards share one running analysis and receive its streamed and final answer',()=>{
+ const page=fixture({postCount:12});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const original=analyzeMessages(page).find(m=>m.post.id==='104');page.port.onMessage.emit({type:'START',requestId:original.requestId});
+ page.articles[5].postData={...page.articles[4].postData};page.articles[5].rect={...page.articles[5].rect,top:1000,bottom:1200};page.mutate();page.tick();
+ assert.equal(analyzeMessages(page).filter(m=>m.post.id==='104').length,1);
+ page.port.onMessage.emit({type:'UPDATE',requestId:original.requestId,text:'Shared in-flight evidence',phase:'verify'});page.flush();
+ assert.equal(page.nodes.filter(n=>n.classList?.contains('answer')&&n.textContent==='Shared in-flight evidence').length,2);
+ completeFeedRequest(page,original,'Shared completed evidence');
+ assert.equal(page.nodes.filter(n=>n.classList?.contains('answer')&&n.textContent==='Shared completed evidence').length,2);
+ assert.equal(analyzeMessages(page).filter(m=>m.post.id==='104').length,1);
+});
+test('a new duplicate instance reuses a completed answer and keeps the post in the fixed window',()=>{
+ const page=fixture({postCount:12});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const original=analyzeMessages(page).find(m=>m.post.id==='104');completeFeedRequest(page,original,'Already complete once');
+ page.articles[5].postData={...page.articles[4].postData};page.articles[5].rect={...page.articles[5].rect,top:1000,bottom:1200};page.mutate();page.tick();
+ assert.equal(analyzeMessages(page).filter(m=>m.post.id==='104').length,1);
+ assert.equal(page.nodes.filter(n=>n.classList?.contains('answer')&&n.textContent==='Already complete once').length,2);
+});
+test('a duplicate follower retains the shared running answer after its original DOM instance disappears',()=>{
+ const page=fixture({postCount:12});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const original=analyzeMessages(page).find(m=>m.post.id==='104');page.port.onMessage.emit({type:'START',requestId:original.requestId});
+ page.articles[5].postData={...page.articles[4].postData};page.articles[5].rect={...page.articles[5].rect,top:1000,bottom:1200};page.mutate();page.tick();
+ page.articles[4].remove();page.mutate();completeFeedRequest(page,original,'Retained shared result');
+ assert.ok(page.nodes.some(n=>n.classList?.contains('answer')&&n.isConnected&&n.textContent==='Retained shared result'));
+ assert.equal(analyzeMessages(page).filter(m=>m.post.id==='104').length,1);
+});
+
+test('two duplicate cards reanalysed in the same tick still start only one fresh request',()=>{
+ const page=fixture({postCount:12});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const original=analyzeMessages(page).find(m=>m.post.id==='104');completeFeedRequest(page,original,'One original answer');
+ page.articles[5].postData={...page.articles[4].postData};page.articles[5].rect={...page.articles[5].rect,top:1000,bottom:1200};page.mutate();page.tick();
+ const cards=page.nodes.filter(n=>n.testShadow?.querySelector('.answer')?.textContent==='One original answer');assert.equal(cards.length,2);
+ cards[0].testShadow.querySelector('.retry').emit('click');cards[1].testShadow.querySelector('.retry').emit('click');
+ const fresh=analyzeMessages(page).filter(m=>m.post.id==='104'&&m.force);assert.equal(fresh.length,1);
+ completeFeedRequest(page,fresh[0],'Fresh shared final');
+ // An obsolete answer cannot overwrite the single accepted fresh reanalysis.
+ page.port.onMessage.emit({type:'RESULT',requestId:original.requestId,result:{text:'Obsolete late answer',verificationStatus:'unverified',sources:[]}});page.flush();
+ assert.equal(page.nodes.filter(n=>n.classList?.contains('answer')&&n.textContent==='Fresh shared final').length,2);
+});
+
+test('image-only video-only and quote-only posts stay in the nearest preload positions',()=>{
+ for(const media of [{hasMedia:true,images:[{url:'https://pbs.twimg.com/media/example.jpg'}]},{hasMedia:true,hasVideo:true},{quotedContext:[{id:'900',url:'https://x.com/test/status/900',text:'Quoted claim'}]}]) {
+  const page=fixture({postCount:12});page.articles[4].postData={...page.articles[4].postData,...media,text:''};
+  page.configure({prefetchCount:5});page.intersect();page.tick();
+  assert.deepEqual(analyzeMessages(page).filter(m=>m.prefetch).map(m=>m.post.id),['104','105','106','107','108']);
+ }
 });

@@ -54,6 +54,8 @@ async function fixture(t) {
   await put(root, '.github/workflows/ci.yml', 'name: Public CI\r\n');
   await put(root, 'demo/index.html', '<html>Public preview</html>\r\n');
   await put(root, 'tools/package-release.mjs', '// Public release helper\r\n');
+  await put(root, 'src/background/example.ts', 'export const sample: number = 1;\n');
+  await put(root, 'src/private.txt', 'PRIVATE_SOURCE_HELPER_DO_NOT_EXPORT');
   await put(root, 'tests/example.test.js', '// Public fixture\r\n');
   await put(root, 'tests/build-ws-fixture.js', '// Shared synthetic WebSocket fixture\r\n');
   await put(root, 'tests/private-helper.js', '// PRIVATE_TEST_HELPER_DO_NOT_EXPORT');
@@ -106,6 +108,10 @@ test('public source keeps both README PNGs unchanged and excludes private output
   assert.ok(names.includes('SuperX-1.2.3/docs/RELEASE_CHANNELS.md'));
   assert.ok(names.includes('SuperX-1.2.3/tools/package-release.mjs'));
   assert.ok(names.includes('SuperX-1.2.3/tests/build-ws-fixture.js'));
+  assert.ok(names.includes('SuperX-1.2.3/src/background/example.ts'));
+  assert.ok(names.includes('SuperX-1.2.3/tsconfig.json'));
+  assert.ok(names.includes('SuperX-1.2.3/package-lock.json'));
+  assert.equal(names.includes('SuperX-1.2.3/src/private.txt'),false);
   const {MANIFEST_LOCALES}=await installationPackager;
   assert.deepEqual(names.filter(name=>name.includes('/extension/_locales/')),MANIFEST_LOCALES.map(locale=>`SuperX-1.2.3/extension/_locales/${locale}/messages.json`).sort());
   for(const locale of MANIFEST_LOCALES)assert.equal(entries.find(entry=>entry.name===`SuperX-1.2.3/extension/_locales/${locale}/messages.json`).data.toString('utf8'),(await readFile(join(root,'extension','_locales',locale,'messages.json'),'utf8')).replace(/\r\n/g,'\n'));

@@ -154,8 +154,9 @@
     $("search-options").hidden=native;
     $("save").disabled = busy;
     $("verification-help").textContent=ui.t(native?"native.help":oauth?"oauth.verificationHelp":"options.verificationHelp",uiLanguage);
-    renderBuildStatus();renderOAuth();
+    renderBuildStatus();renderOAuth();renderPrefetch();
   }
+  function renderPrefetch(){ $("prefetch-count").disabled=busy||$("prefetch-all").checked; }
   function requestLocalAccess(){try{return chrome.permissions?.request({origins:["http://127.0.0.1/*"]}) || Promise.resolve(false);}catch{return Promise.resolve(false);}}
 
   function renderDiagnostics(){
@@ -271,6 +272,9 @@
       || $("api-model").value !== currentSettings.apiModel
       || $("api-reasoning-effort").value !== currentSettings.apiReasoningEffort
       || Number($("api-concurrency").value) !== currentSettings.apiConcurrency
+      || Number($("answer-cache-limit").value) !== currentSettings.answerCacheLimitMB
+      || Number($("prefetch-count").value) !== currentSettings.prefetchCount
+      || $("prefetch-all").checked !== currentSettings.prefetchAll
       || Math.round(Number($("analysis-dwell").value) * 1000) !== currentSettings.dwellMs
       || $("web-search").checked !== currentSettings.webSearch
       || $("x-search").checked !== currentSettings.xSearch
@@ -444,6 +448,10 @@
     populateModels(settings.apiModel);
     populateReasoning(settings.apiModel,settings.apiReasoningEffort);
     $("api-concurrency").value = settings.apiConcurrency;
+    $("answer-cache-limit").value = settings.answerCacheLimitMB;
+    $("prefetch-count").value = settings.prefetchCount;
+    $("prefetch-all").checked = settings.prefetchAll;
+    renderPrefetch();
     $("analysis-dwell").value = settings.dwellMs / 1000;
     $("web-search").checked = settings.webSearch;
     $("x-search").checked = settings.xSearch;
@@ -546,12 +554,13 @@
   });
   $("interface-language").addEventListener("change",() => { renderLanguage();markDraft(); });
   $("api-model").addEventListener("change",() => { populateReasoning($("api-model").value,$("api-reasoning-effort").value);markDraft(); });
-  for (const id of ["enabled","build-reasoning-effort","api-reasoning-effort","api-concurrency","analysis-dwell","web-search","x-search","language",...promptFields.map(field => field.id)]) {
+  for (const id of ["enabled","build-reasoning-effort","api-reasoning-effort","api-concurrency","answer-cache-limit","prefetch-count","prefetch-all","analysis-dwell","web-search","x-search","language",...promptFields.map(field => field.id)]) {
     $(id).addEventListener("input",markDraft);
     $(id).addEventListener("change",markDraft);
   }
   for(const id of ["api-key","api-model","api-reasoning-effort","oauth-model","oauth-reasoning-effort","build-model","build-reasoning-effort","build-port","build-secret"]){for(const event of ["input","change"])$(id).addEventListener(event,()=>clearFieldError(id));}
   for(const id of ["web-search","x-search"]){for(const event of ["input","change"])$(id).addEventListener(event,renderSearchFeedback);}
+  $("prefetch-all").addEventListener("change",renderPrefetch);
   function restorePrompt(field) {
     $(field.id).value = core.DEFAULT_PROMPTS[field.name];
   }
@@ -630,6 +639,9 @@
       apiModel:enabled?$("api-model").value.trim()||currentSettings.apiModel:currentSettings.apiModel,
       apiReasoningEffort:enabled?$("api-reasoning-effort").value||currentSettings.apiReasoningEffort:currentSettings.apiReasoningEffort,
       apiConcurrency:Number($("api-concurrency").value),
+      answerCacheLimitMB:Number($("answer-cache-limit").value),
+      prefetchCount:Number($("prefetch-count").value),
+      prefetchAll:$("prefetch-all").checked,
       dwellMs:Math.round(Number($("analysis-dwell").value) * 1000),
       apiVerification:"only",
       webSearch:$("web-search").checked,

@@ -130,3 +130,19 @@ test('Settings waits for worker source migration before reading missing or empty
  }
  const fresh=fixture({omitSettings:true,focus:'oauth',override:message=>message.type==='GET_UI_LANGUAGE'?new Promise(resolve=>setImmediate(()=>resolve({ok:true,language:'en'}))):null});await settle();assert.equal(fresh.ids.get('provider').value,'oauth');assert.equal(fresh.ids.get('oauth-model').value,'grok-4.3');assert.equal(fresh.ids.get('oauth-reasoning-effort').value,'none');assert.equal(fresh.ids.get('oauth-login').focused,true);assert.equal(fresh.messages.some(message=>['OAUTH_LOGIN','ANALYZE','GENERATE_COMMENTS'].includes(message.type)),false);await fresh.submit();assert.equal(fresh.messages.findLast(message=>message.type==='SAVE_SETTINGS')?.settings.provider,'oauth');
 });
+
+test('answer cache budget is populated and saved independently of model settings',async()=>{
+ const f=fixture();await settle();
+ assert.equal(Number(f.ids.get('answer-cache-limit').value),Core.DEFAULT_SETTINGS.answerCacheLimitMB);
+ f.ids.get('answer-cache-limit').value='512';f.ids.get('answer-cache-limit').listeners.change();
+ await f.submit();
+ assert.equal(f.messages.findLast(message=>message.type==='SAVE_SETTINGS').settings.answerCacheLimitMB,512);
+});
+
+test('lookahead count and all mode are populated, editable and persisted',async()=>{
+ const f=fixture();await settle();assert.equal(Number(f.ids.get('prefetch-count').value),5);assert.equal(f.ids.get('prefetch-all').checked,false);
+ f.ids.get('prefetch-count').value='8';f.ids.get('prefetch-count').listeners.change();await f.submit();
+ assert.equal(f.messages.findLast(m=>m.type==='SAVE_SETTINGS').settings.prefetchCount,8);
+ f.ids.get('prefetch-all').checked=true;f.ids.get('prefetch-all').listeners.change();assert.equal(f.ids.get('prefetch-count').disabled,true);await f.submit();
+ assert.equal(f.messages.findLast(m=>m.type==='SAVE_SETTINGS').settings.prefetchAll,true);assert.equal(f.messages.findLast(m=>m.type==='SAVE_SETTINGS').settings.prefetchCount,8);
+});

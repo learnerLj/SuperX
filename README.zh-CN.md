@@ -157,16 +157,21 @@ X 发帖／回复弹窗、放大媒体及全屏内容优先显示：SuperX 的�
 
 ## 开发与许可
 
-使用 **Node.js 22 及以上**，扩展、测试和本地预览无需 `npm install`。
+使用 **Node.js 22 及以上**，先以 `npm ci` 安装锁定的开发依赖。安装扩展的用户不需要 Node。TypeScript 核心源码在 `src/`，模块与 provider 接口见 [开发结构](docs/ARCHITECTURE.md)。
 
 ```sh
-node tools/validate.mjs
+npm ci
+npm run build
+npm test
+npm run check
 node tools/preview-server.mjs
 npm run package
 ```
 
-校验覆盖资源、JavaScript 语法和回归测试。本地预览使用模拟存储与回答，不读取已安装扩展的真实 Key，也不调用付费 API。持续集成会运行校验并生成安装包，不自动发布 GitHub Release。贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，验收状态见 [发布清单](docs/RELEASE_CHECKLIST.md)，历史版本见 [CHANGELOG.md](CHANGELOG.md)。部分内部标识保留 GrokFirst 名称以兼容升级。官网独立维护，不包含在本仓库或源码发布包中。
+校验覆盖严格 TypeScript、生成文件一致性、资源、JavaScript 语法和回归测试。本地预览使用模拟存储与回答，不读取已安装扩展的真实 Key，也不调用付费 API。持续集成会运行校验并生成安装包，不自动发布 GitHub Release。贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，验收状态见 [发布清单](docs/RELEASE_CHECKLIST.md)，历史版本见 [CHANGELOG.md](CHANGELOG.md)。部分内部标识保留 GrokFirst 名称以兼容升级。官网独立维护，不包含在本仓库或源码发布包中。
 
 项目代码与文档采用 [MIT 许可证](LICENSE)，Marked 保留其 [第三方许可证](extension/marked-LICENSE.txt)。
 
 安全问题按 [SECURITY.md](SECURITY.md) 处理，请勿在公开 Issue 中放 API Key 或非公开帖子内容。
+
+默认预加载视口下方最近 5 条有效帖子，短暂露出但未核查的帖子不会被跳过，可在设置中改数量（0 关闭）或选择本页已加载的全部帖子。预加载窗口随滚动更新，不等待可见帖子的停留计时。可见帖子优先，共用服务额度和并发；不自动滚动或无限拉取。完整答案长期缓存，默认上限 1024 MB（1 GB），可调整；超限按最近使用顺序淘汰。预加载只提前开始，无法保证每条都在滚到前完成。

@@ -29,8 +29,16 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
+      - name: Install locked development tools
+        run: npm ci
+      - name: Strict typecheck
+        run: npm run typecheck
+      - name: Verify generated production entries
+        run: npm run build -- --check
+      - name: Test
+        run: npm test
       - name: Validate syntax, assets, production files and tests
-        run: node tools/validate.mjs
+        run: npm run check
       - name: Build installation candidate, source and checksums
         run: node tools/package-release.mjs
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

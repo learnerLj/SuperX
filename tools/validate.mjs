@@ -11,6 +11,10 @@ const assets = new Set();
 
 function fail(message) { errors.push(message); }
 
+const generated=spawnSync(process.execPath,['tools/build-extension.mjs','--check'],{cwd:root,encoding:'utf8'});
+if(generated.error||generated.status!==0)fail(`TypeScript/generated entries failed: ${generated.error?.message||generated.stdout||generated.stderr}`);
+else console.log('✓ Strict TypeScript and generated production entries');
+
 try {
   const release = await inspectPackage(root);
   console.log(`✓ Release package: SuperX ${release.version}, ${release.files.length} allowlisted files`);

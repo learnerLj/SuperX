@@ -8,6 +8,7 @@
   "minimum_chrome_version": "120",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "alarms"
   ],
   "optional_host_permissions": [
@@ -57,6 +58,7 @@
       "js": [
         "native-panel.js",
         "feed-core.js",
+        "feed-scheduler.js",
         "ui-i18n.js",
         "overlay-layout.js",
         "marked.umd.js",

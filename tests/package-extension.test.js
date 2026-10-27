@@ -254,3 +254,9 @@ test('output cannot contaminate production extension files', async t => {
   const { packageExtension } = await packager;
   await assert.rejects(packageExtension({ root, outputDir: join(root, 'extension', 'build') }), /outside the extension/);
 });
+
+test('persistent answer store ships with explicit storage capacity permission',async()=>{
+ const manifest=JSON.parse(await readFile(join(sourceRoot,'extension','manifest.json'),'utf8'));
+ assert.ok(manifest.permissions.includes('unlimitedStorage'));
+ const {PRODUCTION_FILES}=await packager;assert.ok(PRODUCTION_FILES.includes('answer-cache.js'));
+});

@@ -2537,3 +2537,20 @@ test('post and reply context prompts migrate legacy custom drafts independently 
   assert.equal(defaults.postDraftPrompt,core.DEFAULT_PROMPTS.postDraft);assert.equal(defaults.replyDraftPrompt,core.DEFAULT_PROMPTS.replyDraft);
   assert.notEqual(defaults.postDraftPrompt,defaults.replyDraftPrompt);
 });
+
+test('persistent answer cache capacity defaults to 1024 MB and normalizes integer bounds',()=>{
+  assert.equal(core.DEFAULT_SETTINGS.answerCacheLimitMB,1024);
+  for(const [input,expected] of [[undefined,1024],['20',20],[0,1],[-1,1],[1,1],[20.8,21],[1048577,1048576],['bad',1024]])assert.equal(core.normalizeSettings({answerCacheLimitMB:input}).answerCacheLimitMB,expected);
+});
+
+test('native cache account identity accepts only recognizable public X profile usernames',()=>{
+  for(const href of ['https://x.com/Some_Name','https://twitter.com/some_name/?ref=test#profile'])assert.equal(core.normalizeNativeAccount(href),'some_name');
+  for(const href of ['',null,'https://x.com/home','https://x.com/i/flow/login','https://evil.example/alice','https://user:secret@x.com/alice','http://x.com/alice','https://x.com/too_long_username_here'])assert.equal(core.normalizeNativeAccount(href),'');
+});
+
+test('lookahead defaults and normalized bounds are independent scheduling settings',()=>{
+ assert.equal(core.DEFAULT_SETTINGS.prefetchCount,5);assert.equal(core.DEFAULT_SETTINGS.prefetchAll,false);
+ for(const [input,expected] of [[undefined,5],[0,0],[100,100],[101,100],[-1,0],['12',12],[NaN,5]])assert.equal(core.normalizeSettings({prefetchCount:input}).prefetchCount,expected);
+ assert.equal(core.normalizeSettings({prefetchCount:0,prefetchAll:true}).prefetchAll,true);assert.equal(core.normalizeSettings({prefetchAll:'true'}).prefetchAll,false);
+ const a=core.normalizeSettings({provider:'api',prefetchCount:0}),b=core.normalizeSettings({...a,prefetchCount:100,prefetchAll:true});const input={id:'1',url:'https://x.com/author/status/1',text:'A claim',language:'en'};assert.equal(core.apiPostIdentity(input,a),core.apiPostIdentity(input,b));
+});
