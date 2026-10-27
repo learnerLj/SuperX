@@ -28,3 +28,9 @@ status: closed
 - 完整 npm run check 最终 1598 通过、3 平台相关跳过，含 strict/noUncheckedIndexedAccess、锁定Prettier排版、27生成物漂移、62发布文件、30manifest/UI资源、73JS语法检查、源码包重建一致性。新增负向type-tests直接消费真实provider/layout/UI契约；源码构建拒绝 any、抑制指令、双重unknown断言和src手写JS。
 - Chrome CUA 本地预览实际载入生成物：设置快速配置正常；模拟答案的标题/列表/引用/表格正常；右栏从320拖到432；未调用真实provider。临时页关闭。新迁移构建尚未重载到实际X，留明确边界。
 - 更新 CHANGELOG/ARCHITECTURE/CONTRIBUTING，给出真实TS owner与维护命令。tools/tests仍是开发用Node ESM/CommonJS脚本，第三方发行源码不重写，这些不属于遗留的扩展业务实现。
+
+
+后续用户明确要求生成代码不提交 Git：初次迁移 aa0c79e 保留了生成物，现改为仅在本地与分发包保留。按 GENERATED_ENTRIES 精确 git rm --cached 27 项，不删除已安装 extension 的本地文件；vendor/static 继续跟踪。npm 测试/验证/打包入口与CI/release均先构建。正常构建允许缺少尚未生成的输出，但依旧检查TS owner/vendor；--check保留缺失/漂移拒绝。对应重建测试删除全部生成JS模拟全新克隆，再构建并比较原产物。真实运行时代码和权限不变。
+
+
+Source-only 跟进验收完成：独立只读 reviewer 核查CI/打包/正常构建与--check链路无阻断。由已暂存index checkout-index得到真正不含27个生成JS的干净检出，在独立目录实际 npm ci、npm run check、npm run package:release 全链路通过：1598 pass、3 skip。安装ZIP SHA256仍为 d279b74bd4750386f8112afef27b3db28665b7c145e0c5ea3dbafa22f909d0ed，与移除Git跟踪前完全一致，证明本次仅改变源码分发/构建跟踪，不改变浏览器运行产物。git ls-files只剩两vendor JS，git check-ignore验证全部27生成输出被忽略，access验证全部27本地文件保留。按用户此前授权将跟进修正commit/push。

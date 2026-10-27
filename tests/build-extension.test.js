@@ -15,7 +15,10 @@ test('exported source includes locked typed dependencies, rebuilds identical ent
  const pkg=JSON.parse(await readFile(join(directory,'package.json'),'utf8')),lock=JSON.parse(await readFile(join(directory,'package-lock.json'),'utf8'));for(const name of ['typescript','esbuild','katex','@types/chrome']){assert.match(pkg.devDependencies[name],/^\d+\.\d+\.\d+$/);assert.equal(lock.packages['node_modules/'+name].version,pkg.devDependencies[name]);assert.equal(lock.packages[''].devDependencies[name],pkg.devDependencies[name]);}
  // Reuse the same locked local toolchain instead of networking for every fixture.
  await symlink(join(root,'node_modules'),join(directory,'node_modules'),process.platform==='win32'?'junction':'dir');
- await buildExtension({root:directory,check:true});await buildExtension({root:directory});
+ // A fresh checkout has source/static assets but none of the generated JS.
+ for(const entry of GENERATED_ENTRIES)await rm(join(directory,entry.output));
+ await assert.rejects(buildExtension({root:directory,check:true}),/Missing runtime script/);
+ await buildExtension({root:directory});await buildExtension({root:directory,check:true});
  for(const entry of GENERATED_ENTRIES)assert.deepEqual(await readFile(join(directory,entry.output)),await readFile(join(root,entry.output)));
  const target=join(directory,'extension/feed-scheduler.js'),before=await readFile(target),file=join(directory,'src/content/feed-scheduler.ts');await writeFile(file,(await readFile(file,'utf8')).replace('Math.trunc(options.count)','Math.trunc(options.count)-1'));
  await assert.rejects(buildExtension({root:directory,check:true}),/Generated output drift: extension\/feed-scheduler.js/);assert.deepEqual(await readFile(target),before,'--check must not silently regenerate');

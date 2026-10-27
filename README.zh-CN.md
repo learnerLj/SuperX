@@ -74,7 +74,7 @@ AI 功能需要配置一种连接；本机浏览历史不依赖连接。订阅 O
 
 使用 Edge 或从 GitHub 手动安装时：
 
-1. 下载 [**1.1.0 稳定版安装 ZIP**](https://github.com/bwjoke/SuperX/releases/download/v1.1.0/SuperX.zip) 并解压，或在 [Releases](https://github.com/bwjoke/SuperX/releases) 中选择其他预览／稳定版本。附加的 `SuperX-<版本>.zip` 和 `SuperX.zip` 内容完全相同。也可下载源码，使用其中的 `extension/` 文件夹。
+1. 下载 [**1.1.0 稳定版安装 ZIP**](https://github.com/bwjoke/SuperX/releases/download/v1.1.0/SuperX.zip) 并解压，或在 [Releases](https://github.com/bwjoke/SuperX/releases) 中选择其他预览／稳定版本。附加的 `SuperX-<版本>.zip` 和 `SuperX.zip` 内容完全相同。若使用 Git 克隆或 GitHub 源码下载，须先运行 `npm ci` 和 `npm run build`，再加载 `extension/`；生成的 JavaScript 不提交到 Git。
 2. 打开 `chrome://extensions` 或 `edge://extensions`，开启「开发者模式」。
 3. 点击「加载已解压的扩展程序」，选择包含 `manifest.json` 的文件夹。
 4. 在 SuperX 设置中配置该版本支持的连接，保存、启用 SuperX 并刷新 X。1.1.0 支持订阅登录、API Key 和 CLI／ACP；归档的旧版本可能提供较少连接方式。

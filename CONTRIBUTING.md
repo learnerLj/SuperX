@@ -4,7 +4,7 @@ Thank you for helping improve SuperX. Keep changes focused on a concrete user be
 
 ## Local development
 
-Requirements: **Node.js 22 or newer**, plus desktop Chrome / Chromium Edge 120 or newer for browser checks. Install development dependencies with `npm ci`. All first-party extension runtime code uses strict TypeScript under `src/`; JavaScript under `extension/` is generated, except the two official Marked vendor bundles. Edit source and run `npm run build`; never patch generated files.
+Requirements: **Node.js 22 or newer**, plus desktop Chrome / Chromium Edge 120 or newer for browser checks. Install development dependencies with `npm ci`. All first-party extension runtime code uses strict TypeScript under `src/`; JavaScript under `extension/` is generated, except the two official Marked vendor bundles. Edit source and run `npm run build`; never patch or commit generated files. A fresh clone must be built before loading `extension/`; npm test/check/package entrypoints build automatically.
 
 ```sh
 npm ci
@@ -18,7 +18,7 @@ node tools/preview-server.mjs
 
 The preview server prints a loopback URL. Its feed, settings and popup demos reuse production code with simulated storage and responses. Do not enter a real API Key into the preview. Test fixtures must use invented credentials; automated tests must not send paid API requests.
 
-Load the `extension/` directory as an unpacked extension to check actual browser integration. Changes to loaded files require reloading the extension and refreshing X. The local preview cannot prove that current X selectors or a real provider response work.
+After `npm ci` and `npm run build`, load the `extension/` directory as an unpacked extension to check actual browser integration. Changes to loaded files require reloading the extension and refreshing X. The local preview cannot prove that current X selectors or a real provider response work.
 
 ## Structure
 

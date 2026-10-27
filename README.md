@@ -73,7 +73,7 @@ For the currently published Chrome Web Store version (last verified: 0.9.12), in
 
 For Edge or a manual GitHub installation:
 
-1. Download the [**1.1.0 Stable installation ZIP**](https://github.com/bwjoke/SuperX/releases/download/v1.1.0/SuperX.zip) and extract it, or choose another labelled Preview or Stable package from [Releases](https://github.com/bwjoke/SuperX/releases). The versioned `SuperX-<version>.zip` and `SuperX.zip` attachments are identical. Alternatively, download the source and use its `extension/` folder.
+1. Download the [**1.1.0 Stable installation ZIP**](https://github.com/bwjoke/SuperX/releases/download/v1.1.0/SuperX.zip) and extract it, or choose another labelled Preview or Stable package from [Releases](https://github.com/bwjoke/SuperX/releases). The versioned `SuperX-<version>.zip` and `SuperX.zip` attachments are identical. For a Git checkout or GitHub source download, run `npm ci` and `npm run build` before loading `extension/`; generated JavaScript is not tracked in Git.
 2. Open `chrome://extensions` or `edge://extensions` and enable **Developer mode**.
 3. Choose **Load unpacked** and select the folder containing `manifest.json`.
 4. Open SuperX settings, configure a connection available in that release and save. Enable SuperX and refresh X. Version 1.1.0 supports subscription sign-in, API Key and CLI / ACP; older archived releases may offer fewer connections.

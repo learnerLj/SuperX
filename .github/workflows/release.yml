@@ -29,6 +29,8 @@ jobs:
         run: npm ci
       - name: Strict typecheck
         run: npm run typecheck
+      - name: Generate production entries from TypeScript
+        run: npm run build
       - name: Verify generated production entries
         run: npm run build -- --check
       - name: Test

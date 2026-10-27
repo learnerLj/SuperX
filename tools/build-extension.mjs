@@ -63,7 +63,10 @@ export const GENERATED_ENTRIES = Object.freeze([
     globalName: "SuperXFeedScheduler",
   },
 ]);
-export async function inspectScriptOwnership(root = projectRoot) {
+export async function inspectScriptOwnership(
+  root = projectRoot,
+  { requireOutputs = true } = {},
+) {
   async function scriptsIn(directory, prefix = "") {
     const files = [];
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -88,7 +91,10 @@ export async function inspectScriptOwnership(root = projectRoot) {
   for (const name of scripts)
     if (!owners.has(name) && !VENDOR_SCRIPTS.includes(name))
       throw new Error(`Unowned handwritten runtime: ${name}`);
-  for (const name of [...owners.keys(), ...VENDOR_SCRIPTS])
+  for (const name of [
+    ...(requireOutputs ? owners.keys() : []),
+    ...VENDOR_SCRIPTS,
+  ])
     if (!scripts.includes(name))
       throw new Error(`Missing runtime script: ${name}`);
   return { scripts, owners, vendors: VENDOR_SCRIPTS };
@@ -185,7 +191,7 @@ export async function buildExtension({
   root = projectRoot,
   check = false,
 } = {}) {
-  await inspectScriptOwnership(root);
+  await inspectScriptOwnership(root, { requireOutputs: check });
   await checkTypedSources(resolve(root, "src"));
   const types = spawnSync(
     process.execPath,

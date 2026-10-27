@@ -2,7 +2,7 @@
 
 ## 源码与构建
 
-扩展全部自有运行时的 TypeScript 源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。27 个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
+扩展全部自有运行时的 TypeScript 源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。27 个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不提交到 Git，也不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
 
 ```sh
 npm ci
@@ -16,7 +16,7 @@ npm run package
 
 `npm run build` 先核对完整入口覆盖并做严格类型检查。已有四个导出模块保持本地 IIFE 打包；其他 classic scripts 只擦除类型，保留 UMD、顶层词法、脚本顺序和各 world 边界，不加入运行时 import/export。类型导入、导出先由 TypeScript AST 识别并移除模块标记，避免 esbuild 将顶层 `this` 改成 `undefined`。Node 测试通过同一生成入口加载生产逻辑，不维护第二套测试实现。`npm test` 的 pretest 与 `npm run check` 都会检查生成一致性。源码包包含 TypeScript、配置、依赖锁与构建工具；安装包只包含运行所需的本地资源。
 
-扩展不再有自有手写 JavaScript 运行时。`extension/marked.umd.js` 与 `extension/marked-cjk-friendly.umd.js` 是唯一两个第三方发行文件豁免，不修改第三方源码。HTML、CSS 和静态资源仍在 `extension/`；Node ESM 工具与现有 JS 行为测试属于开发工具，保持其原格式。所有业务修改都编辑 `src/` 后构建，不维护第二份手写实现。
+扩展不再有自有手写 JavaScript 运行时。`extension/marked.umd.js` 与 `extension/marked-cjk-friendly.umd.js` 是唯一两个第三方发行文件豁免，不修改第三方源码。HTML、CSS 和静态资源仍在 `extension/`；Node ESM 工具与现有 JS 行为测试属于开发工具，保持其原格式。所有业务修改都编辑 `src/` 后构建，不维护第二份手写实现。全新 Git 克隆没有这些生成 JS；先 `npm ci` 与 `npm run build` 才能加载 `extension/`。npm 的测试、全量检查和打包入口会自动先构建；CI 与 release workflow 也显式构建后再检查。安装 ZIP 和源码分发 ZIP 可含构建好的 JS 供直接加载，这不代表生成物被纳入 Git。
 
 构建从安装目录递归枚举 JS，与 TS owner 双向核对；新增遗漏文件、缺 owner、生成物漂移均失败。`npm run format` / `npm run format:check` 使用锁定版本 Prettier 统一 TS 源码排版，全量检查包含格式验收。源码禁止显式 `any`、关闭类型检查的注释和 `as unknown as` 双重断言。动态 JSON、React fiber、浏览器 DOM 与协议帧使用有界契约；既有运行时校验保留。`@types/chrome` 锁定版本提供扩展 API 类型，`runtime-globals.d.ts` 描述各脚本实际暴露的全局对象，不引入运行时注册层。
 

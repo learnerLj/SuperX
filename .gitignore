@@ -32,3 +32,8 @@ tmp/
 /tools/*.py
 /tools/render_superx_*.cjs
 /新建 文本文档.txt
+
+# Browser JavaScript is generated locally from src/. Vendor distributions are source assets.
+/extension/*.js
+!/extension/marked.umd.js
+!/extension/marked-cjk-friendly.umd.js

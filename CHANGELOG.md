@@ -1,5 +1,11 @@
 # Changelog
 
+## Source-only Git checkout — 2026-10-28
+
+- Stop tracking all 27 generated first-party `extension/*.js` files in Git; retain their local copies for the installed extension. TypeScript under `src/` is the only maintained runtime implementation. Keep official vendor distributions and static extension assets tracked.
+- Build missing runtime files from a fresh checkout. Test, validation and packaging npm commands build first; CI and release workflows explicitly generate before checking outputs. Installation ZIPs still contain the JavaScript required by Chrome.
+- Document the build step for repository/source installs and add a clean-source reconstruction regression. A separate checkout containing no generated JS passed `npm ci`, all 1,598 checks (3 skipped), and release packaging; the installation ZIP is byte-identical to the preceding build. Existing extension functionality and permissions are unchanged.
+
 ## Full TypeScript runtime — 2026-10-28
 
 - Migrate every first-party extension runtime to strict TypeScript: the MV3 worker, all four provider paths, native API/panel bridges, post extraction, Markdown rendering, drafts, reading rail, settings, popup, onboarding, history and localization. All 27 first-party JavaScript entries are generated from `src/`; the two official Marked UMD distributions remain vendor files.

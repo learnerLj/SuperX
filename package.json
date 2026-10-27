@@ -21,9 +21,14 @@
     "package:source": "node tools/package-source.mjs",
     "build": "node tools/build-extension.mjs",
     "typecheck": "tsc --noEmit",
-    "pretest": "node tools/build-extension.mjs --check",
+    "pretest": "node tools/build-extension.mjs",
     "format": "prettier --write \"src/**/*.ts\" tools/build-extension.mjs tsconfig.json",
-    "format:check": "prettier --check \"src/**/*.ts\" tools/build-extension.mjs tsconfig.json"
+    "format:check": "prettier --check \"src/**/*.ts\" tools/build-extension.mjs tsconfig.json",
+    "precheck": "node tools/build-extension.mjs",
+    "prepackage": "node tools/build-extension.mjs",
+    "prepackage:check": "node tools/build-extension.mjs",
+    "prepackage:source": "node tools/build-extension.mjs",
+    "prepackage:release": "node tools/build-extension.mjs"
   },
   "engines": {
     "node": ">=22"
