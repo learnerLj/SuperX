@@ -17,8 +17,12 @@
   let hasConfig=false,workerSleeping=false,awaitingConfig=false,reconnectFailures=0,xModalBlocked=false,pageSuspended=false;
   let oauthState={},credentialIdentity='',taskRevision;
   let draftComposer;
+  const explicitRequest=request=>request?.task==='analysis'&&request.force===true;
   const wakeActions=new Map(),wakeControls=new Map();
   const entries = new Map(), detachedEntries = new Set(), requests = new Map(), visible = new Set();
+  // Reading a saved answer is independent of permission to start paid work.
+  // Keep these probes separate from generation, progress and keepalive state.
+  const cacheLookups = new Map();
   // X virtualizes the timeline. Keep live subscriptions and a bounded set of
   // recent cards when their native article is temporarily removed or recycled.
   const allEntries=()=>[...entries.values(),...detachedEntries];
@@ -60,6 +64,7 @@
   const railLanguage=node('select','rail-language');
   for(const item of Core.LANGUAGES){const option=node('option','',item.value==='auto'?t('lang.auto').split(' · ')[0]:item.label);option.value=item.value;railLanguage.append(option);}
   railLanguage.value=settings.language;railLanguage.addEventListener('change',()=>{railLanguage.disabled=true;postControl({type:'SET_LANGUAGE',language:railLanguage.value});});
+  const railToggle=node('button','rail-toggle');railToggle.type='button';railToggle.addEventListener('click',()=>{railToggle.disabled=true;postControl({type:'SET_ENABLED',enabled:!settings.enabled});});
   const railOptions=node('button','rail-settings');railOptions.append(gear());railOptions.addEventListener('click',()=>openSettings());
   const railHistory=node('button','rail-history');railHistory.type='button';
   const historyIcon=document.createElementNS('http://www.w3.org/2000/svg','svg');historyIcon.setAttribute('viewBox','0 0 24 24');historyIcon.setAttribute('fill','none');historyIcon.setAttribute('stroke','currentColor');historyIcon.setAttribute('stroke-width','1.7');historyIcon.setAttribute('aria-hidden','true');
@@ -69,7 +74,7 @@
   const railExpand=node('button','rail-expand'),expandMark=node('span','rail-expand-mark');
   expandMark.setAttribute('aria-hidden','true');expandMark.append(node('span','brand-symbol'));railExpand.append(expandMark);railExpand.setAttribute('aria-label','展开 SuperX');railExpand.setAttribute('aria-expanded','false');railExpand.title='展开 SuperX';railExpand.hidden=true;railExpand.addEventListener('click',()=>setCollapsed(false,true));
   const railSeparators=node('div','rail-separators');railSeparators.setAttribute('aria-hidden','true');
-  railHeader.append(railLanguageControl,railHistory,railOptions,railCollapse);overlayShadow.append(rail,railHeader,railExpand,railSeparators);
+  railHeader.append(railLanguageControl,railToggle,railHistory,railOptions,railCollapse);overlayShadow.append(rail,railHeader,railExpand,railSeparators);
   refreshHeaderLanguage();
   document.body.append(overlay);
   let layoutFrame = null, themeDirty = true, themeSignature = '', themePrimary = null;
@@ -82,7 +87,7 @@
         const entry=entries.get(change.target);
         if(entered&&entry&&[...requests.values()].some(request=>request.entry===entry&&request.scrollCancellation))entry.since=Date.now();
       }
-      else {visible.delete(change.target);const entry=entries.get(change.target);if(entry){entry.since=0;entry.pending=false;queue.remove(entry.post.id);if(entry.status==='new')refreshCard(entry);}}
+      else {visible.delete(change.target);const entry=entries.get(change.target);if(entry){forgetCacheLookup(entry,true);entry.since=0;entry.pending=false;queue.remove(entry.post.id);if(entry.status==='new')refreshCard(entry);}}
     }
     scheduleLayout();
     tick();
@@ -154,6 +159,7 @@
   function connectionLost(error,sourcePort=port) {
     if(sourcePort && sourcePort!==port)return;
     nativePanel.disconnect();
+    for(const entry of allEntries())forgetCacheLookup(entry,Boolean(entry.cacheLookupId));
     needsPageRefresh=invalidContext(error);
     // Chrome may suspend an idle MV3 worker. A closed idle port is not an API
     // failure and must not overwrite completed reading or restart paid work.
@@ -203,10 +209,12 @@
   function afterWake(entry,task,action) {
     if(!workerSleeping&&!awaitingConfig)return false;
     if(!(providerReady||(task==='analysis'&&answerCacheReady))||needsPageRefresh)return false;
-    const key=wakeKey(entry,task),identity=Core.apiPostIdentity(entry.post,task==='comments'?undefined:settings),path=location.pathname;
+    const key=wakeKey(entry,task),identity=Core.apiPostIdentity(entry.post,task==='comments'?undefined:settings),path=location.pathname,
+      oauthIdentity=settings.provider==='oauth'?credentialIdentity:null;
     if(!wakeActions.has(key))wakeActions.set(key,()=>{
       if(entries.get(entry.article)!==entry||path!==location.pathname||
           Core.apiPostIdentity(entry.post,task==='comments'?undefined:settings)!==identity||
+          oauthIdentity!==null&&oauthIdentity!==credentialIdentity||
           !entry.article.isConnected||!eligibility(entry.article).eligible||document.hidden||collapsed)return;
       action();
     });
@@ -217,7 +225,7 @@
   function usableConnection(){return !pageSuspended&&!needsPageRefresh&&providerReady&&(connected||workerSleeping||awaitingConfig);}
   function configureDraft(){
     draftComposer?.configure({settings,ready:providerReady,connected,hasConfig,awaitingConfig,refreshRequired:needsPageRefresh,
-      taskRevision,restoring:settings.provider==='oauth'&&oauthState.state==='restoring',
+      taskRevision,restoring:settings.provider==='oauth'&&['restoring','refreshing'].includes(oauthState.state)&&!providerReady,
       needsProvider:needsProvider(),identity:JSON.stringify([settings.provider,credentialIdentity,Core.providerModel(settings),Core.providerEffort(settings),settings.buildTransport,settings.buildPort,settings.webSearch,settings.xSearch,settings.explanationMode])});
   }
   let buildErrorCode='',nativeErrorCode='';
@@ -251,6 +259,7 @@
     postControl({type:'OPEN_HISTORY'});
   }
   function refreshHeaderLanguage() {
+    railToggle.textContent=t(settings.enabled?'common.pause':'common.resume');railToggle.disabled=!hasConfig||awaitingConfig;
     const direction=uiLanguage==='ar'?'rtl':'ltr';
     rail.setAttribute('lang',uiLanguage);rail.setAttribute('dir',direction);
     railHeader.setAttribute('lang',uiLanguage);railHeader.setAttribute('dir',direction);
@@ -315,7 +324,7 @@
     const failure={stage:'verify',code};
     if(valid) {
       if(['max_output_tokens','content_filter'].includes(value.reason))failure.reason=value.reason;
-      if(['API_INCOMPLETE','API_STREAM_INTERRUPTED','API_STREAM_ERROR','API_LANGUAGE_MISMATCH','API_CAPACITY','RATE_LIMIT','API_ERROR','CANCELED','TIMEOUT'].includes(value.errorCode))failure.errorCode=value.errorCode;
+      if(['API_INCOMPLETE','API_STREAM_INTERRUPTED','API_STREAM_ERROR','API_LANGUAGE_MISMATCH','API_CAPACITY','API_IMAGE_INPUT','RATE_LIMIT','API_ERROR','CANCELED','TIMEOUT'].includes(value.errorCode))failure.errorCode=value.errorCode;
       if(Number.isSafeInteger(value.httpStatus)&&value.httpStatus>=100&&value.httpStatus<=599)failure.httpStatus=value.httpStatus;
       const providerCode=Core.apiFailureProviderCode(value.providerCode);
       if(providerCode)failure.providerCode=providerCode;
@@ -325,7 +334,7 @@
   }
   function refreshVerificationFailure(entry) {
     const failure=entry.verificationFailure;
-    const failureKey=isCapacityFailure(undefined,failure)?'error.apiCapacity':verificationFailureKeys[failure?.code];
+    const failureKey=failure?.errorCode==='API_IMAGE_INPUT'?'error.apiImageInput':isCapacityFailure(undefined,failure)?'error.apiCapacity':verificationFailureKeys[failure?.code];
     entry.ui.status.title=failure?t(failureKey):'';
     const requestDiagnostics=Core.sanitizedRequestDiagnostics(entry.requestDiagnostics),commentRequestDiagnostics=Core.sanitizedRequestDiagnostics(entry.commentRequestDiagnostics);
     if(failure||requestDiagnostics||commentRequestDiagnostics) {
@@ -353,6 +362,7 @@
     if(typeof code==='string'&&code.startsWith('X_NATIVE_'))return code==='X_NATIVE_UNSUPPORTED'?'native.unsupported':code==='X_NATIVE_LOGIN_REQUIRED'?'native.login':code==='X_NATIVE_PANEL_BUSY'?'native.busy':code==='X_NATIVE_CANCEL_UNCONFIRMED'?'native.cleanup':'native.failed';
     if(code==='MODEL_UNSUPPORTED')return 'error.modelUnsupported';
     if(code==='MEDIA_INPUT_LIMIT')return 'error.mediaLimit';
+    if(code==='API_IMAGE_INPUT')return 'error.apiImageInput';
     if(code==='BUILD_IMAGE_UNSUPPORTED')return 'build.imageUnsupported';
     if(code==='BUILD_IMAGE_UNAVAILABLE')return 'build.imageUnavailable';
     if(code==='BUILD_IMAGE_LIMIT')return 'build.imageLimit';
@@ -397,7 +407,7 @@
     if(connected)post({type:'CANCEL_ALL'});
     queue.clear();requests.clear();wakeActions.clear();
     for(const entry of allEntries()) {
-      clearRetries(entry);entry.status='new';entry.pending=false;entry.since=0;entry.result=null;entry.cached=false;
+      forgetCacheLookup(entry,true);clearRetries(entry);entry.status='new';entry.pending=false;entry.since=0;entry.result=null;entry.cached=false;
       entry.analysisUsage=null;entry.requestDiagnostics=undefined;setVerificationFailure(entry,null,false);
       renderAnswer(entry,'',true);renderSources(entry,[]);note(entry,'');entry.ui.retry.hidden=true;
       entry.commentStatus='idle';entry.comments=[];entry.commentUsage=null;refreshComments(entry);
@@ -407,6 +417,65 @@
     return {requestId,task,entry,postSnapshot:entry.post,apiIdentity:Core.apiPostIdentity(entry.post,task==='comments'?undefined:settings),path:location.pathname,provider:settings.provider,
       language:settings.language,apiModel:settings.provider==='oauth'?settings.oauthModel:settings.provider==='build'?settings.buildModel:settings.apiModel,
       verifyPrompt:settings.verifyPrompt,commentsPrompt:settings.commentsPrompt};
+  }
+  function savedAnswerIdentity(entry) {
+    return JSON.stringify([Core.apiPostIdentity(entry.post,settings),settings.provider,nativeAccountIdentity,credentialIdentity,taskRevision,
+      Core.providerModel(settings),Core.providerEffort(settings),settings.language,settings.webSearch,settings.xSearch,
+      Core.explanationMode(settings),settings.verifyPrompt]);
+  }
+  function forgetCacheLookup(entry,retry=false) {
+    const lookup=cacheLookups.get(entry.cacheLookupId);
+    if(lookup){
+      lookup.entries.delete(entry);
+      if(!lookup.entries.size){clearTimeout(lookup.timer);cacheLookups.delete(lookup.requestId);}
+    }
+    entry.cacheLookupId=undefined;
+    if(retry){entry.cacheLookupKey=undefined;entry.cacheLookupDeferred=false;}
+  }
+  function restoreSavedAnswer(entry) {
+    if(entry.status!=='new'||entry.post.isPromoted)return false;
+    if(reuseAnalysis(entry))return false;
+    const key=savedAnswerIdentity(entry);
+    if(entry.cacheLookupDeferred)return true;
+    if(entry.cacheLookupKey===key)return Boolean(entry.cacheLookupId);
+    if(!hasConfig||!connected||awaitingConfig){
+      if(workerSleeping&&!needsPageRefresh)connect();
+      return true;
+    }
+    forgetCacheLookup(entry);
+    entry.cacheLookupKey=key;
+    const pending=[...cacheLookups.values()].find(value=>value.lookupKey===key&&value.path===location.pathname);
+    if(pending){entry.cacheLookupId=pending.requestId;pending.entries.add(entry);return true;}
+    const requestId=crypto.randomUUID(),lookup={...requestSnapshot(entry,requestId),lookupKey:key,entries:new Set([entry])};
+    entry.cacheLookupId=requestId;cacheLookups.set(requestId,lookup);
+    // A lost cache reply must never freeze automatic mode. Timeout is only a
+    // miss; the enabled setting still decides whether new analysis may start.
+    lookup.timer=setTimeout(()=>{
+      if(cacheLookups.get(requestId)!==lookup)return;
+      cacheLookups.delete(requestId);
+      for(const item of lookup.entries)if(item.cacheLookupId===requestId)item.cacheLookupId=undefined;
+      tick();
+    },5000);
+    if(!post({type:'LOOKUP_CACHED_POST',requestId,post:entry.post,nativeAccount:currentNativeAccount()}))forgetCacheLookup(entry,true);
+    return Boolean(entry.cacheLookupId);
+  }
+  function receiveSavedAnswer(message) {
+    const lookup=cacheLookups.get(message.requestId);if(!lookup)return;
+    clearTimeout(lookup.timer);cacheLookups.delete(message.requestId);
+    for(const entry of lookup.entries){
+      if(entry.cacheLookupId!==message.requestId)continue;
+      entry.cacheLookupId=undefined;
+      const current=entry.status==='new'&&entries.get(entry.article)===entry&&entry.article.isConnected&&
+        lookup.path===location.pathname&&savedAnswerIdentity(entry)===lookup.lookupKey;
+      if(!current)continue;
+      if(reuseAnalysis(entry,true))continue;
+      if(message.type==='CACHE_MISS'){entry.cacheLookupDeferred=message.deferred===true;continue;}
+      if(document.hidden||collapsed||syncXModalVisibility()||!eligibility(entry.article).eligible){entry.cacheLookupKey=undefined;continue;}
+      entry.analysisKey=analysisIdentity(entry);entry.analysisVersion=(entry.analysisVersion||0)+1;
+      applyAnalysisResult(entry,{...lookup,entry},message);
+      refreshCard(entry);
+    }
+    syncSharedAnalyses();scheduleLayout();tick();
   }
   function isAccountLimit(failure) {return settings.provider==='api'&&(failure?.httpStatus===402||['spending_limit','insufficient_credits','insufficient_quota','usage_limit_exceeded'].includes(Core.apiFailureProviderCode(failure?.providerCode)));}
   function isCapacityFailure(code,failure) {return code==='API_CAPACITY'||failure?.errorCode==='API_CAPACITY';}
@@ -435,6 +504,7 @@
       cancelDwellTimer();queue.clear();
       for(const entry of allEntries()){entry.pending=false;entry.since=0;}
       for(const [id,request] of requests)if(request.task==='comments'?['queued','retry-wait'].includes(request.entry.commentStatus):['queued','retry-wait'].includes(request.entry.status)) {
+        if(explicitRequest(request))continue;
         if(request.originatedPrefetch) {
           if(!request.railCancellation){request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,preserveStarted:true});}
           continue;
@@ -491,22 +561,28 @@
       // controls; accepted jobs and visible answers retain their task snapshot.
       // An archived explanation draft can survive upgrades, but never changes
       // current fact-check jobs or their visible results.
-      for(const field of ['explainPrompt','verifyPrompt','draftPrompt','postDraftPrompt','replyDraftPrompt','commentsPrompt','interfaceLanguage','dwellMs','analysisDefaultsVersion','oauthRemember','answerCacheLimitMB','prefetchCount','prefetchAll']){delete previousOptions[field];delete nextOptions[field];}
+      for(const field of ['explainPrompt','verifyPrompt','draftPrompt','postDraftPrompt','replyDraftPrompt','commentsPrompt','interfaceLanguage','dwellMs','analysisDefaultsVersion','oauthRemember','enabled','answerCacheLimitMB','prefetchCount','prefetchAll']){delete previousOptions[field];delete nextOptions[field];}
       // A waking worker can report OAuth restoration before decrypting the
       // saved identity. Unknown is not a new account: keep retained results
       // terminal until an authoritative identity arrives, with calls blocked.
-      const pendingOAuthIdentity=nextSettings.provider==='oauth'&&settings.provider==='oauth'&&message.oauthStatus?.state==='restoring'&&!message.credentialIdentity;
+      const pendingOAuthConnection=nextSettings.provider==='oauth'&&settings.provider==='oauth'&&
+        ['restoring','refreshing'].includes(message.oauthStatus?.state)&&!message.oauthStatus?.errorCode&&
+        (!message.credentialIdentity||message.credentialIdentity===credentialIdentity);
+      const pendingOAuthIdentity=pendingOAuthConnection&&!message.credentialIdentity;
       const nextCredentialIdentity=pendingOAuthIdentity?credentialIdentity:message.credentialIdentity||'';
       const accountChanged=credentialIdentity!==nextCredentialIdentity;
       const allChanged=accountChanged||JSON.stringify(previousOptions)!==JSON.stringify(nextOptions);
       const presentationOrPromptsOnlyChanged=!allChanged&&JSON.stringify(settings)!==JSON.stringify(nextSettings);
       const identity=value=>JSON.stringify([value.provider,value.apiModel,value.apiReasoningEffort,value.oauthModel,value.oauthReasoningEffort,value.buildModel,value.buildReasoningEffort,value.buildTransport,value.buildPort,value.language,value.webSearch,value.xSearch,value.apiVerification,value.explanationMode]);
       const previous=identity(settings),dwellChanged=settings.dwellMs!==nextSettings.dwellMs;
+      const pausing=settings.enabled&&!nextSettings.enabled;
       const wasReady=providerReady;
       settings=nextSettings;
       credentialIdentity=nextCredentialIdentity;oauthState=message.oauthStatus||{};
       taskRevision=Number.isSafeInteger(message.taskRevision)?message.taskRevision:undefined;
+      for(const entry of allEntries())if(allChanged||presentationOrPromptsOnlyChanged||entry.cacheLookupDeferred)forgetCacheLookup(entry,true);
       if(dwellChanged)resetDwellWaits();
+      if(pausing){resetDwellWaits();for(const [requestId,request] of requests)if(request.task==='analysis'&&!request.started&&!explicitRequest(request)&&!request.railCancellation){request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId,preserveStarted:true});}}
       configureHistory(message.historyEnabled,message.historyEpoch);
       providerReady=Boolean(message.ready)&&!pendingOAuthIdentity;answerCacheReady=message.answerCacheReady===true&&!pendingOAuthIdentity;used=message.used || 0;
       nativeErrorCode=message.nativeStatus?.errorCode||'';
@@ -523,7 +599,7 @@
       // Per-answer failures never freeze other posts, including legacy
       // worker pause flags restored from an older browser session.
       if(!presentationOrPromptsOnlyChanged)queue.clear();
-      if(allChanged || !settings.enabled || (wasReady&&!providerReady)) {
+      if(allChanged || (wasReady&&!providerReady&&!pendingOAuthConnection)) {
         resetDwellWaits();
         // Security and task-configuration changes cancel every old task.
         // Repeated paused snapshots must not cancel explicit draft checks;
@@ -538,20 +614,22 @@
         }
       }
       if(typeof message.collapsed==='boolean')setCollapsed(message.collapsed);
-      awaitingConfig=false;
+      awaitingConfig=false;railToggle.disabled=false;
       for(const [type,control] of wakeControls){
         wakeControls.delete(type);
         if(type==='SET_LANGUAGE'&&control.language===settings.language)continue;
         if(type==='SET_LANGUAGE')awaitingConfig=true;
         if(!post(control))return;
       }
-      for(const entry of allEntries())refreshCard(entry);
+      for(const entry of allEntries()){refreshCard(entry);}
       scheduleLayout();configureDraft();
       // SET_LANGUAGE is acknowledged by a new CONFIG. Wait for that snapshot
       // so a waking feed cannot bill for an obsolete answer language.
       if(awaitingConfig){railLanguage.disabled=true;handshakeTimer=setTimeout(()=>connectionLost(new Error('Language configuration timed out')),8000);return;}
-      const actions=[...wakeActions.values()];wakeActions.clear();
-      if(providerReady||answerCacheReady)for(const action of actions){if(!connected||awaitingConfig)break;action();}
+      if(providerReady||answerCacheReady){
+        const actions=[...wakeActions.values()];wakeActions.clear();
+        for(const action of actions){if(!connected||awaitingConfig)break;action();}
+      }else if(!pendingOAuthConnection)wakeActions.clear();
       for(const entry of allEntries())refreshCard(entry);
       scheduleScan();return;
     }
@@ -566,12 +644,17 @@
       scheduleLayout();return;
     }
     if(draftComposer?.handleMessage(message)){scheduleLayout();return;}
+    if(message.type==='CACHE_MISS'||message.type==='RESULT'&&message.cacheLookup===true){receiveSavedAnswer(message);return;}
     const request=requests.get(message.requestId);
     if(!request) return;
     const {entry}=request;
     if(request.task==='analysis')entry.analysisVersion=(entry.analysisVersion||0)+1;
     const unchanged=Core.apiPostIdentity(entry.post,request.task==='comments'?undefined:settings)===request.apiIdentity;
     if(!unchanged || request.path!==lastPath || request.path!==location.pathname&&!hasBlockingXModal()){finishRequest(message);return;}
+    if(message.type==='ERROR'&&['TRIGGER_DISABLED','PAUSED'].includes(message.code)&&!request.started&&!explicitRequest(request)){
+      requests.delete(message.requestId);entry.status='new';entry.pending=false;entry.since=0;entry.analysisUsage=null;
+      refreshCard(entry);syncSharedAnalyses();scheduleLayout();return;
+    }
     if(request.railCancellation&&['ERROR','COMMENT_ERROR'].includes(message.type)&&message.code==='CANCELLED') {
       // The worker confirms that this job never started. A delayed START or
       // RESULT, on the other hand, still belongs to the paid request we retain.
@@ -579,7 +662,7 @@
       if(request.task==='comments')entry.commentRetry=null;else entry.analysisRetry=null;
       if(request.task==='comments'){entry.commentStatus='error';entry.commentError='status.cancelled';entry.commentUsage=null;refreshComments(entry);}
       else {entry.status='new';entry.pending=false;entry.analysisUsage=null;refreshCard(entry);}
-      scheduleLayout();tick();return;
+      syncSharedAnalyses();scheduleLayout();tick();return;
     }
     // Monotonic across retry waits and re-queuing: this logical task has begun,
     // even if a later QUEUED snapshot no longer looks like running work.
@@ -640,20 +723,7 @@
       if(message.warning)note(entry,['explain','verification_queued'].includes(message.phase)?'note.checkIncomplete':'note.possibleErrors');
     }
     if(message.type==='RESULT') {
-      entry.analysisRetry=null;entry.keepRetryAnswer=false;
-      const {result,invalid}=readerResult(message.result);
-      captureUsage(entry,'analysis',result,request,Boolean(message.cached),true);
-      entry.status=invalid?'error':'done';entry.result=result;entry.verificationStart=result.verificationStart;
-      if(invalid)entry.errorCode='API_INCOMPLETE';
-      renderAnswer(entry,result.text,true);renderSources(entry,result.sources||[]);
-      const incomplete=['incomplete','failed'].includes(result.verificationStatus);
-      if(incomplete)retryPhase(entry,'analysis','exhausted',message);
-      entry.requestDiagnostics=Core.sanitizedRequestDiagnostics(result.requestDiagnostics||message.requestDiagnostics);
-      setVerificationFailure(entry,result.verificationFailure,incomplete);
-      const sourceKey=isCapacityFailure(undefined,entry.verificationFailure)?'error.apiCapacity':incomplete?'status.incomplete':result.searched?'status.searched':'status.unverified';
-      entry.cached=!invalid&&Boolean(message.cached);status(entry,sourceKey);
-      note(entry,invalid?'':incomplete?partialResultNote(result):'note.possibleErrors');entry.ui.retry.hidden=false;
-      if(isAccountLimit(entry.verificationFailure))note(entry,'note.accountLimit');
+      applyAnalysisResult(entry,request,message);
       finishRequest(message);
     }
     if(['ERROR','RETRY_WAIT'].includes(message.type)) {
@@ -686,6 +756,22 @@
   }
   // API launch spacing belongs to the shared background scheduler; this page
   // submits all visible work without waiting for earlier answers to finish.
+  function applyAnalysisResult(entry,request,message) {
+    entry.analysisRetry=null;entry.keepRetryAnswer=false;
+    const {result,invalid}=readerResult(message.result);
+    captureUsage(entry,'analysis',result,request,Boolean(message.cached),true);
+    entry.status=invalid?'error':'done';entry.result=result;entry.verificationStart=result.verificationStart;
+    if(invalid)entry.errorCode='API_INCOMPLETE';
+    renderAnswer(entry,result.text,true);renderSources(entry,result.sources||[]);
+    const incomplete=['incomplete','failed'].includes(result.verificationStatus);
+    if(incomplete)retryPhase(entry,'analysis','exhausted',message);
+    entry.requestDiagnostics=Core.sanitizedRequestDiagnostics(result.requestDiagnostics||message.requestDiagnostics);
+    setVerificationFailure(entry,result.verificationFailure,incomplete);
+    const sourceKey=isCapacityFailure(undefined,entry.verificationFailure)?'error.apiCapacity':incomplete?'status.incomplete':result.searched?'status.searched':'status.unverified';
+    entry.cached=!invalid&&Boolean(message.cached);status(entry,sourceKey);
+    note(entry,invalid?'':incomplete?partialResultNote(result):'note.possibleErrors');entry.ui.retry.hidden=false;
+    if(isAccountLimit(entry.verificationFailure))note(entry,'note.accountLimit');
+  }
   function finishRequest(message) { if(!['RESULT','ERROR','COMMENT_RESULT','COMMENT_ERROR'].includes(message.type))return;requests.delete(message.requestId);pruneDetachedEntries(); }
   function affectsDisplayedPostBody(target) {
     // X can keep both bodies mounted and switch visibility through their own
@@ -941,7 +1027,7 @@
     cancelDwellTimer();queue.clear();
     for(const entry of allEntries()){entry.pending=false;entry.since=0;}
     for(const [id,request] of requests)if(request.task==='comments'?['queued','retry-wait'].includes(request.entry.commentStatus):['queued','retry-wait'].includes(request.entry.status)) {
-      if(request.railCancellation||(preserveStarted||request.originatedPrefetch)&&request.started)continue;
+      if(request.railCancellation||explicitRequest(request)||(preserveStarted||request.originatedPrefetch)&&request.started)continue;
       request.railCancellation=true;
       // Leave the request attached until cancellation is acknowledged. It may
       // already be running while the START message is still crossing the port.
@@ -951,7 +1037,7 @@
   function positionCards() {
     syncNativeAccount();
     const blocked=syncXModalVisibility();
-    overlay.hidden=document.hidden || !settings.enabled || !supportedPage()||blocked;
+    overlay.hidden=document.hidden || !supportedPage()||blocked;
     if(overlay.hidden){
       if(blocked){rail.hidden=railHeader.hidden=railExpand.hidden=railSeparators.hidden=true;for(const entry of allEntries())entry.card.hidden=true;pauseUnseenRailQueue();}
       syncNativeCells(null,null);syncNativeHeaders();return;
@@ -1013,11 +1099,15 @@
     tick();
   }
   function discardEntry(entry) {
+    forgetCacheLookup(entry,true);
+
     for(const [id,request] of requests)if(request.entry===entry){post({type:'CANCEL',requestId:id});requests.delete(id);}
     if(entry.answerFrame!==undefined)cancelAnimationFrame(entry.answerFrame);
     detachedEntries.delete(entry);entry.card.remove();
   }
   function removeEntry(article,entry,preserve=true) {
+    forgetCacheLookup(entry,true);
+
     observer.unobserve(article);resizeObserver?.unobserve(article);resizeObserver?.unobserve(entry.ui.box);
     visible.delete(article);queue.remove(entry.post.id);
     if(entry.answerFrame!==undefined)cancelAnimationFrame(entry.answerFrame);
@@ -1026,7 +1116,7 @@
     entry.pending=false;entry.since=0;detachedEntries.add(entry);
     // START can be in transit. A conditional cancellation must leave both the
     // subscription and its concurrency lease intact if work has already begun.
-    for(const [id,request] of requests)if(request.entry===entry&&
+    for(const [id,request] of requests)if(request.entry===entry&&!explicitRequest(request)&&
         (request.task==='comments'?['queued','retry-wait'].includes(entry.commentStatus):['queued','retry-wait'].includes(entry.status))&&!request.railCancellation){
       if(queuedEntryEligible(entry,lookaheadWindow(),request.prefetch))continue;
       request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.originatedPrefetch?{preserveStarted:true}:{})});
@@ -1041,6 +1131,8 @@
   function scan() {
     if(syncXModalVisibility()){scheduleLayout();return;}
     if(location.pathname!==lastPath){
+
+      for(const entry of allEntries())forgetCacheLookup(entry,true);
       cancelDwellTimer();historySeen.clear();historyPending.clear();historyRetryAt=0;lastPath=location.pathname;queue.clear();post({type:'CANCEL_ALL'});requests.clear();draftComposer?.reset();
       for(const entry of allEntries()){
         clearRetries(entry);entry.since=0;entry.pending=false;
@@ -1055,7 +1147,7 @@
       const data=Core.extractPost(article);if(!data){const previous=entries.get(article);if(previous)removeEntry(article,previous);continue;}
       const signature=JSON.stringify([Core.postFingerprint(data),Boolean(data.isPromoted)]);let entry=entries.get(article);
       if(entry)entry.path=location.pathname;
-      if(entry&&entry.signature===signature&&entry.card.isConnected)continue;
+      if(entry&&entry.signature===signature&&entry.card.isConnected){continue;}
       if(entry&&entry.post.id===data.id&&(entry.post.text!==data.text||entry.post.language!==data.language))historySeen.delete(data.id);
       const identity=post=>Core.apiPostIdentity(post,settings);
       if(entry&&entry.card.isConnected&&
@@ -1094,7 +1186,7 @@
     entry.ui.retry.textContent=t('common.retry');entry.ui.generateComments.textContent=t('common.generateComments');
     entry.ui.diagnosticLabel.textContent=t('common.diagnostics');
     if(entry.status==='new') {
-      status(entry,!connected&&!workerSleeping?(needsPageRefresh?'status.refreshRequired':'status.connectionLost'):!providerReady?needsProvider():entry.pending?'status.queued':'status.waiting');
+      status(entry,!settings.enabled?'status.disabled':!connected&&!workerSleeping?(needsPageRefresh?'status.refreshRequired':'status.connectionLost'):!providerReady?needsProvider():entry.pending?'status.queued':'status.waiting');
       note(entry,'');
       entry.ui.retry.hidden=true;
     }
@@ -1170,7 +1262,7 @@
         entry.pending=false;
         entry.since=entry.article.isConnected&&visible.has(entry.article)&&eligibility(entry.article).eligible?now:0;
       }
-      for(const [id,request] of requests)if(request.task==='analysis'&&['queued','retry-wait'].includes(request.entry.status)&&!request.force){
+      for(const [id,request] of requests)if(request.task==='analysis'&&['queued','retry-wait'].includes(request.entry.status)&&!explicitRequest(request)&&!request.force){
         if(request.prefetch&&queuedEntryEligible(request.entry,lookahead,true))continue;
         request.scrollCancellation=true;
         const entry=request.entry;
@@ -1204,9 +1296,15 @@
     const blocked=syncXModalVisibility();
     recordHistory();
     if(blocked){pauseUnseenRailQueue();return;}
-    if(document.hidden || collapsed || !settings.enabled || !(providerReady||answerCacheReady) || !supportedPage()){resetDwellWaits();return;}
+    if(document.hidden || collapsed || !supportedPage()){resetDwellWaits();return;}
     if(currentRailBounds().hidden){pauseUnseenRailQueue();return;}
     if(location.pathname!==lastPath){scheduleScan();return;}
+    for(const article of visible){
+      const entry=entries.get(article);if(!entry||!article.isConnected)continue;
+      if(!eligibility(article).eligible){forgetCacheLookup(entry,true);continue;}
+      restoreSavedAnswer(entry);
+    }
+    if(!settings.enabled || !(providerReady||answerCacheReady)){resetDwellWaits();return;}
     if(!connected){
       resetDwellWaits();
       if(workerSleeping&&[...visible].some(article=>{
@@ -1225,7 +1323,7 @@
     // that the worker confirms has not begun; retain its subscription meanwhile.
     for(const [id,request] of requests) {
       const entry=request.entry,queued=request.task==='comments'?['queued','retry-wait'].includes(entry.commentStatus):['queued','retry-wait'].includes(entry.status);
-      if(!queued||request.railCancellation)continue;
+      if(!queued||request.railCancellation||explicitRequest(request))continue;
       if(!queuedEntryEligible(entry,lookahead,request.task==='analysis'&&request.prefetch)){
         entry.since=0;request.railCancellation=true;post({type:'CANCEL_IF_QUEUED',requestId:id,...(request.originatedPrefetch?{preserveStarted:true}:{})});
       }
@@ -1234,7 +1332,7 @@
       const entry=entries.get(article);if(!entry||!article.isConnected)continue;
       const visibility=eligibility(article);
       if(!visibility.eligible){entry.since=0;entry.pending=false;queue.remove(entry.post.id);continue;}
-      if(entry.status!=='new')continue;
+      if(entry.status!=='new'||entry.cacheLookupId||entry.cacheLookupDeferred)continue;
       if(!entry.since)entry.since=now;
       const deadline=entry.since+settings.dwellMs;
       if(deadline>now){nextDwell=nextDwell?Math.min(nextDwell,deadline):deadline;continue;}
@@ -1286,6 +1384,7 @@
     if(force&&!clearComments(entry))return;
     // Cancelling a comment can synchronously invalidate the shared port.
     if(!connected||!(providerReady||(!force&&answerCacheReady)))return;
+    forgetCacheLookup(entry);
     delete entry.analysisLeader;entry.sharedVersion=undefined;entry.analysisKey=analysisIdentity(entry);entry.analysisVersion=(entry.analysisVersion||0)+1;
     entry.analysisRetry=null;entry.keepRetryAnswer=false;
     const requestId=crypto.randomUUID();

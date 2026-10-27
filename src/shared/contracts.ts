@@ -69,6 +69,21 @@ export interface Post {
   context?: Post;
   threadContext?: Post[];
 }
+/** Feed-to-worker messages; scheduling does not enter provider/cache identity. */
+export interface PostAnalysisMessage {
+  type: "ANALYZE";
+  requestId: string;
+  post: Post;
+  force?: boolean;
+  prefetch?: boolean;
+  nativeAccount?: string;
+}
+export interface CachedPostLookupMessage {
+  type: "LOOKUP_CACHED_POST";
+  requestId: string;
+  post: Post;
+  nativeAccount?: string;
+}
 export interface Source {
   url: string;
   title: string;

@@ -47,3 +47,16 @@ test('nontext API/Build/OAuth selections reject before credentials while native 
  for(const provider of ['api','oauth','build']){const h=fixture(),request=h.request(provider);request.settings.apiModel=request.settings.buildModel=request.settings.oauthModel='grok-imagine-image';await assert.rejects(h.registry[provider].run(request,h.context),{code:'MODEL_UNSUPPORTED'});assert.deepEqual(h.credentials,[]);}
  const h=fixture(),request=h.request('x-native');request.settings.apiModel='grok-imagine-image';await h.registry['x-native'].run(request,h.context);assert.equal(h.calls.length,1);
 });
+
+test('API_IMAGE_INPUT stays a safe request classification across API and OAuth without native dispatch',async()=>{
+ for(const provider of ['api','oauth']){
+  const h=fixture(),error=Object.assign(new Error('PRIVATE_IMAGE_URL'),{code:'API_IMAGE_INPUT'});
+  h.deps.api.run=async()=>{throw error;};
+  await assert.rejects(h.registry[provider].run(h.request(provider),h.context),value=>value===error);
+  const safe=h.registry[provider].publicError(error);
+  assert.equal(safe.code,'API_IMAGE_INPUT');assert.equal(safe.error.includes('PRIVATE_IMAGE_URL'),false);
+  assert.match(safe.error,/image/i);assert.equal(h.calls.length,0);
+ }
+ const h=fixture();await h.registry['x-native'].run(h.request('x-native'),h.context);
+ assert.equal(h.calls[0].name,'x-native');assert.deepEqual(h.credentials,[]);
+});

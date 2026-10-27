@@ -62,7 +62,7 @@
   function providerEffort(settings) {
     return settings?.provider==='x-native'?'auto':settings?.provider==='oauth'?oauthReasoningEffort(settings.oauthReasoningEffort):settings?.provider==='build'?buildReasoningEffort(providerModel(settings),settings.buildReasoningEffort):reasoningEffort(providerModel(settings),settings?.apiReasoningEffort);
   }
-  const API_FAILURE_PROVIDER_CODES=new Set(['invalid_request_error','invalid_request','bad_request','invalid_api_key','authentication_error','unauthenticated','permission_error','permission_denied','forbidden','insufficient_quota','insufficient_credits','spending_limit','usage_limit_exceeded','rate_limit_exceeded','rate_limit_error','too_many_requests','resource_exhausted','model_not_found','model_not_supported','unsupported_model','unsupported_parameter','invalid_parameter','invalid_argument','context_length_exceeded','server_error','internal_server_error','internal_error','service_unavailable','service_unavailable_error','overloaded_error','timeout','request_timeout','gateway_timeout','tool_error','tool_unavailable','search_error','search_unavailable','content_filter']);
+  const API_FAILURE_PROVIDER_CODES=new Set(['invalid_request_error','invalid_request','bad_request','invalid_image','invalid_image_url','image_parse_error','invalid_api_key','authentication_error','unauthenticated','permission_error','permission_denied','forbidden','insufficient_quota','insufficient_credits','spending_limit','usage_limit_exceeded','rate_limit_exceeded','rate_limit_error','too_many_requests','resource_exhausted','model_not_found','model_not_supported','unsupported_model','unsupported_parameter','invalid_parameter','invalid_argument','context_length_exceeded','server_error','internal_server_error','internal_error','service_unavailable','service_unavailable_error','overloaded_error','timeout','request_timeout','gateway_timeout','tool_error','tool_unavailable','search_error','search_unavailable','content_filter']);
   function apiFailureProviderCode(value){
     if(typeof value!=='string'||value.length>64)return undefined;
     const code=value.toLowerCase().replace(/-/g,'_');
@@ -88,7 +88,7 @@
     const providers=failures.map(item=>apiFailureProviderCode(item.providerCode)).filter(Boolean);
     const statuses=failures.map(item=>item.httpStatus).concat(values.map(item=>item.requestDiagnostics?.transportStatus)).filter(item=>Number.isInteger(item)&&item>=400&&item<=599);
     if(values.some(item=>item.name==='AbortError')||codes.some(code=>RETRY_CANCEL_CODES.has(code)))return {retryable:false,reason:'cancelled'};
-    if(codes.includes('MODEL_UNSUPPORTED'))return {retryable:false,reason:'request_rejected'};
+    if(codes.includes('MODEL_UNSUPPORTED')||codes.includes('API_IMAGE_INPUT')||providers.some(code=>['invalid_image','invalid_image_url','image_parse_error'].includes(code)))return {retryable:false,reason:'request_rejected'};
     if(codes.some(code=>RETRY_SETUP_CODES.has(code)))return {retryable:false,reason:'setup_required'};
     if(providers.some(code=>RETRY_BUDGET_CODES.has(code))||statuses.includes(402))return {retryable:false,reason:'account_limit'};
     if(failures.some(item=>item.code==='OUTPUT_LIMIT'||['max_output_tokens','content_filter'].includes(item.reason))||codes.includes('BUILD_LIMIT'))return {retryable:false,reason:'output_limit'};
@@ -481,19 +481,21 @@
   }
 
   function anchorsFor(scope, article, quoteRoot = quoteRootFor) {
-    return all(scope, 'a[href]').filter(anchor => ownedBy(anchor, scope, article, quoteRoot) && canonicalPostUrl(attribute(anchor, 'href')));
+    const visibility = new WeakMap();
+    return all(scope, 'a[href]').filter(anchor => ownedBy(anchor, scope, article, quoteRoot) &&
+      canonicalPostUrl(attribute(anchor, 'href')) && displayed(anchor, scope, visibility));
   }
 
   function mainAnchorFor(scope, article, quoteRoot = quoteRootFor) {
-    const anchors = anchorsFor(scope, article, quoteRoot);
-    return anchors.find(anchor => all(anchor, 'time').length > 0) || anchors[0] || null;
+    const anchors = anchorsFor(scope, article, quoteRoot), visibility = new WeakMap();
+    return anchors.find(anchor => all(anchor, 'time').some(time => displayed(time, scope, visibility))) || anchors[0] || null;
   }
 
   function imagesFor(scope, article, quoteRoot = quoteRootFor) {
     const images = [];
-    const seen = new Set();
+    const seen = new Set(), visibility = new WeakMap();
     for (const img of all(scope, 'img')) {
-      if (!ownedBy(img, scope, article, quoteRoot)) continue;
+      if (!ownedBy(img, scope, article, quoteRoot) || !displayed(img, scope, visibility)) continue;
       const src = attribute(img, 'src') || img.currentSrc || '';
       let url;
       try { url = new URL(src, 'https://x.com'); } catch (_) { continue; }
@@ -513,10 +515,10 @@
   function scopePost(scope, article, quoteRoot = quoteRootFor, anchorFor = mainAnchorFor) {
     const anchor = anchorFor(scope, article, quoteRoot);
     const url = anchor ? canonicalPostUrl(attribute(anchor, 'href')) : null;
-    const timestamp = (anchor ? all(anchor, 'time') : []).find(element => ownedBy(element, scope, article, quoteRoot)) ||
-      all(scope, 'time').find(element => ownedBy(element, scope, article, quoteRoot));
-    const userName = all(scope, '[data-testid="User-Name"]').find(element => ownedBy(element, scope, article, quoteRoot));
     const visibility = new WeakMap();
+    const ownDisplayed = element => ownedBy(element, scope, article, quoteRoot) && displayed(element, scope, visibility);
+    const timestamp = (anchor ? all(anchor, 'time') : []).find(ownDisplayed) || all(scope, 'time').find(ownDisplayed);
+    const userName = all(scope, '[data-testid="User-Name"]').find(ownDisplayed);
     const textNodes = all(scope, '[data-testid="tweetText"]').filter(element => ownedBy(element, scope, article, quoteRoot) && displayed(element, scope, visibility));
     const texts = textNodes.map(textOf).filter(Boolean);
     const language = textNodes.filter(element => textOf(element)).map(element => attribute(element, 'lang'))
@@ -528,7 +530,7 @@
     // The header often contains the timestamp after a middle-dot separator.
     if (author) author = author.split(/\n?\s*·\s*\n?/)[0].replace(/\n+/g, ' ').trim();
     if (!author && username) author = `@${username}`;
-    const hasVideo = all(scope, 'video, [data-testid="videoPlayer"], [data-testid="videoComponent"]').some(element => ownedBy(element, scope, article, quoteRoot));
+    const hasVideo = all(scope, 'video, [data-testid="videoPlayer"], [data-testid="videoComponent"]').some(ownDisplayed);
     return {
       id: idMatch ? idMatch[1] : null,
       url,
@@ -547,8 +549,9 @@
     if (!article || typeof article.querySelectorAll !== 'function') return null;
     const post = scopePost(article, article);
     if (!post.id || !post.url) return null;
-    const roots = new Set();
+    const roots = new Set(), visibility = new WeakMap();
     for (const element of all(article, 'a[href], [data-testid="tweetText"], time')) {
+      if (!displayed(element, article, visibility)) continue;
       const quoteRoot = quoteRootFor(element, article);
       if (quoteRoot) roots.add(quoteRoot);
     }
@@ -576,19 +579,21 @@
     const contains=(root,node)=>{for(let cursor=node;cursor;cursor=cursor.parentElement){if(cursor===root)return true;if(cursor===scope)break;}return false;};
     const bodies=all(scope,'[data-testid="tweetText"]'),visibility=new WeakMap();
     const anchors=anchorsFor(scope,article,quoteRoot).filter(anchor=>displayed(anchor,scope,visibility)&&!bodies.some(body=>contains(body,anchor)));
-    const timed=anchors.find(anchor=>all(anchor,'time').some(time=>ownedBy(time,scope,article,quoteRoot)));
+    const timed=anchors.find(anchor=>all(anchor,'time').some(time=>ownedBy(time,scope,article,quoteRoot)&&displayed(time,scope,visibility)));
     if(timed)return timed;
     const headers=all(scope,'[data-testid="User-Name"]').filter(name=>ownedBy(name,scope,article,quoteRoot));
     // A linked citation in body/media is not the preview's own permalink.
     return anchors.find(anchor=>headers.some(name=>contains(name,anchor)))||null;
   }
   function contextUsername(scope) {
-    const name = all(scope, '[data-testid="User-Name"]').find(element => ownedBy(element, scope, scope, contextQuoteRootFor));
+    const visibility = new WeakMap();
+    const name = all(scope, '[data-testid="User-Name"]').find(element => ownedBy(element, scope, scope, contextQuoteRootFor) && displayed(element, scope, visibility));
     if (!name) return '';
     const handles = [...new Set(Array.from(textOf(name).matchAll(/(?:^|\s)@([A-Za-z0-9_]{1,15})(?=\s|·|$)/g),match => match[1].toLowerCase()))];
     if (handles.length !== 1) return '';
     const profiles = new Set();
     for (const anchor of all(name, 'a[href]')) {
+      if (!displayed(anchor, scope, visibility)) continue;
       try {
         const url = new URL(attribute(anchor, 'href'), 'https://x.com');
         if (!/^https?:$/.test(url.protocol) || url.username || url.password || !/^(?:www\.)?(?:x\.com|twitter\.com)$/i.test(url.hostname)) continue;
@@ -612,8 +617,9 @@
   function extractPostContext(scope, depth = 0) {
     if (!scope || typeof scope.querySelectorAll !== 'function') return null;
     const post = scopePost(scope,scope,contextQuoteRootFor,contextAnchorFor);
-    const roots = new Set();
+    const roots = new Set(), visibility = new WeakMap();
     for (const element of all(scope,'a[href], [data-testid="tweetText"], time')) {
+      if (!displayed(element, scope, visibility)) continue;
       const quote = contextQuoteRootFor(element,scope);if (quote) roots.add(quote);
     }
     // X sometimes wraps the actual preview button in a quoteTweet shell.

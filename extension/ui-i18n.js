@@ -2198,6 +2198,20 @@
     "डिफ़ॉल्ट 5; 0 से बंद। दिखने वाली पोस्ट पहले आती हैं। अनुरोध सीमा और सेवा कोटा साझा होते हैं; कैश फिर उपयोग होता है। सभी में केवल X द्वारा पहले से लोड पोस्ट हैं, बिना स्वतः स्क्रॉल के। स्क्रॉल करते समय अपडेट होता है; प्रतीक्षा केवल दिखने वाली पोस्ट के लिए है।"
   ]
 });
+  section(['error.apiImageInput'], {
+    en:['xAI could not read an image supplied with this post. Check that the media is accessible, then retry.'],
+    'zh-CN':['xAI 无法读取帖子中的某张图片。请确认原帖媒体可访问后重试。'],
+    'zh-TW':['xAI 無法讀取貼文中的某張圖片。請確認原貼文媒體可存取後重試。'],
+    ja:['xAI が投稿の画像を読み取れませんでした。元のメディアにアクセスできることを確認して再試行してください。'],
+    ko:['xAI가 게시물의 이미지를 읽지 못했습니다. 원본 미디어에 접근할 수 있는지 확인한 후 다시 시도하세요.'],
+    es:['xAI no pudo leer una imagen de esta publicación. Comprueba que el archivo sea accesible y vuelve a intentarlo.'],
+    fr:['xAI n’a pas pu lire une image de cette publication. Vérifiez que le média est accessible, puis réessayez.'],
+    de:['xAI konnte ein Bild dieses Beitrags nicht lesen. Prüfe, ob das Originalmedium zugänglich ist, und versuche es erneut.'],
+    pt:['A xAI não conseguiu ler uma imagem desta publicação. Verifique se a mídia está acessível e tente novamente.'],
+    ar:['تعذر على xAI قراءة صورة مرفقة بهذا المنشور. تحقق من إمكانية الوصول إلى الوسائط ثم أعد المحاولة.'],
+    ru:['xAI не удалось прочитать изображение в публикации. Проверьте доступность исходного файла и повторите попытку.'],
+    hi:['xAI इस पोस्ट की एक तस्वीर नहीं पढ़ सका। जाँचें कि मूल मीडिया उपलब्ध है, फिर दोबारा कोशिश करें।']
+  });
   const aliases = {'common.auto':'lang.auto','common.failed':'status.failed','tooltip.collapse':'common.collapse','tooltip.expand':'common.expand','build.imageUnavailable':'draft.imageUnavailable','build.imageLimit':'error.mediaLimit'};
   for (const language of SUPPORTED_LANGUAGES) {
     for (const [key, source] of Object.entries(aliases)) catalog[language][key] = catalog[language][source];

@@ -1,6 +1,6 @@
 # Privacy and data handling
 
-This document describes SuperX 1.0.0, including image inputs for published-post and manual draft checks through Grok subscription OAuth, API Key or official local Grok. Last updated: 2026-10-24. Draft text and supported attached images are sent only when you explicitly request a draft check. Release availability and platform-specific acceptance are documented separately in the [connection guide](docs/CONNECTIONS.md#acceptance-scope).
+This document describes the SuperX 1.1.0 candidate, including pause/resume and image inputs for published-post and manual draft checks through Grok subscription OAuth, API Key or official local Grok. Last updated: 2026-10-27. Draft text and supported attached images are sent only when you explicitly request a draft check. Release availability and platform-specific acceptance are documented separately in the [connection guide](docs/CONNECTIONS.md#acceptance-scope).
 
 ## Local development: X built-in Grok
 
@@ -108,8 +108,8 @@ An upgrade can reuse an existing valid plaintext local Key or an available sessi
 
 ## Expiry, clearing and controls
 
-- **Pause / disable:** stops automatic analysis and new history recording. It does not delete the Key, cache or existing history. Cancellation can occur after a request has reached xAI, and already sent work may still be billed.
-- **Collapse:** cancels waiting work and restores X's sidebar. Already started work may finish; collapse is not equivalent to clearing credentials or pausing all requests.
+- **Pause:** prevents new post checks and new history recording, and withdraws unstarted automatic work. Accepted running answers and explicitly requested queued checks can finish; explicit draft checks remain available. It does not delete the Key, cache or existing history. Already accepted work may still use the provider allowance.
+- **Collapse:** cancels waiting automatic work and restores X's sidebar. Already started and accepted explicit checks may finish; collapse is not equivalent to clearing credentials or pausing all requests.
 - **Clear saved Key:** cancels tasks and removes saved ciphertext, the separate IndexedDB encryption key, obsolete Key records, the session credential and answer caches. Your remember preference remains selected or unselected as before. It does not delete browsing history, revoke the Key at xAI or erase an already sent request.
 - **Replace Key:** cancels old tasks and clears the previous answer caches before applying the replacement Key. Existing browsing history remains. Already sent work may still be billed.
 - **Clear cache:** removes the persistent post-answer cache, session comment cache and any legacy local cache. It does not erase your Key, settings, browsing history, provider records or answers already displayed in an open page; refresh that page to clear its displayed results. New completed requests can subsequently create new cache entries.

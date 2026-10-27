@@ -101,7 +101,7 @@ test('the rail history icon opens local history independently of analysis readin
 
 // The fake DOM records writes to the actual X nodes while giving the extension
 // its own shadow roots. Geometry arithmetic is covered by overlay-layout.test.
-function fixture({postCount=2,connectError=null,historyAck=true}={}) {
+function fixture({postCount=2,connectError=null,historyAck=true,cacheLookup='miss'}={}) {
   const writes = [], nodes = [], timeouts = new Map(), frames = new Map(), intervals = [];
   const intersectionObservers = [], mutationObservers = [], resizeObservers = [];
   const copied=[];let copyFailure=false;
@@ -174,6 +174,8 @@ function fixture({postCount=2,connectError=null,historyAck=true}={}) {
       }
     }
     appendChild(child) { this.append(child); return child; }
+    insertBefore(child, reference) { if(!reference){this.append(child);return child;}if(child===reference)return child;if(child.parentNode)child.remove();const index=this.childNodes.indexOf(reference);if(index<0)throw new Error('Missing reference');child.parentNode=this;this.childNodes.splice(index,0,child);return child; }
+    get nextElementSibling() { const children=this.parentElement?.children||[];return children[children.indexOf(this)+1]||null; }
     prepend(...children) { record(this, 'prepend'); for (const child of [...children].reverse()) { if (child.parentNode) child.remove(); child.parentNode = this; this.childNodes.unshift(child); } }
     replaceChildren(...children) { record(this, 'replaceChildren'); for (const child of this.childNodes) child.parentNode = null; this.childNodes = []; this._text = ''; this.append(...children); }
     remove() { if (this.parentNode) { record(this.parentNode, 'removeChild'); this.parentNode.childNodes = this.parentNode.childNodes.filter(node => node !== this); this.parentNode = null; } }
@@ -240,7 +242,14 @@ function fixture({postCount=2,connectError=null,historyAck=true}={}) {
   // Chrome does not notify the initiating end when disconnect() is called.
   // A BFCache round trip must therefore recover without that local callback.
   const makePort=()=>({ onMessage: runtimeEvent(), onDisconnect: runtimeEvent(), sent: [], closed:false, disconnectCalls:0,
-    postMessage(message) { if(this.closed)throw new Error('Attempting to use a disconnected port object');if(sendFailure)throw sendFailure;this.sent.push(message);if(historyAck&&message.type==='HISTORY_VISIT')this.onMessage.emit({type:'HISTORY_ACK',batchId:message.batchId,ok:true,epoch:message.historyEpoch}); },
+    postMessage(message) {
+      if(this.closed)throw new Error('Attempting to use a disconnected port object');if(sendFailure)throw sendFailure;this.sent.push(message);
+      if(historyAck&&message.type==='HISTORY_VISIT')this.onMessage.emit({type:'HISTORY_ACK',batchId:message.batchId,ok:true,epoch:message.historyEpoch});
+      if(message.type==='LOOKUP_CACHED_POST'&&cacheLookup!=='hold'){
+        const result=typeof cacheLookup==='function'?cacheLookup(message.post):null;
+        this.onMessage.emit(result?{type:'RESULT',requestId:message.requestId,result,cached:true,cacheLookup:true}:{type:'CACHE_MISS',requestId:message.requestId});
+      }
+    },
     disconnect() { this.closed=true;this.disconnectCalls++; }
   });
   let port=makePort();
@@ -283,12 +292,13 @@ function fixture({postCount=2,connectError=null,historyAck=true}={}) {
     failConnect(error){connectFailure=error;},
     failPortSend(error){sendFailure=error;},
     failRuntimeSend(error){runtimeFailure=error;},
+    setCacheLookup(value){cacheLookup=value;},
     connectionAttempts(){return connectAttempts;},
     reloadCount(){return reloads;},
     replacePort(){const previous=port;port=makePort();return previous;},
     runTimeouts(maxDelay=3000){for(const [id,timer] of [...timeouts])if(timer.delay<=maxDelay){timeouts.delete(id);timer.fn();}harness.flush();},
     pendingTimeouts(){return [...timeouts.values()].map(timer=>timer.delay);},
-    configure(overrides = {}) { port.onMessage.emit({ type: 'CONFIG', settings: { ...core.DEFAULT_SETTINGS, provider: 'api', dwellMs: 0, prefetchCount:0, prefetchAll:false, ...overrides }, ready: true, used: 0 }); harness.flush(); },
+    configure(overrides = {}) { port.onMessage.emit({ type: 'CONFIG', settings: { ...core.DEFAULT_SETTINGS, provider: 'api', dwellMs: 0, prefetchCount:0,prefetchAll:false, ...overrides }, ready: true, used: 0 }); harness.flush(); },
     flush() {
       for (let pass = 0; pass < 8; pass++) {
         const timers = [...timeouts].filter(([, timer]) => timer.delay<=160&&timer.at<=now); const pendingFrames = [...frames];
@@ -1017,7 +1027,7 @@ test('hiding a selected native-header ancestor releases its observations and re-
   native.container.hidden=false;page.clearWrites();page.mutate([{type:'attributes',attributeName:'hidden',target:native.container}]);assert.equal(nativeHeaderObserved(page,native.tabs),true);assert.equal(nativeHeaderObserved(page,native.container),true);assert.deepEqual(page.writes,[]);
 });
 
-for(const state of ['disabled','no-rail-space'])test('native-header resize observations are released when '+state+' and restored with the visible rail',()=>{
+for(const state of ['no-rail-space'])test('native-header resize observations are released when '+state+' and restored with the visible rail',()=>{
   const page=fixture({postCount:1}),native=nativePrimaryTabBar(page);page.clearWrites();page.configure();assert.equal(nativeHeaderObserved(page,native.tabs),true);assert.equal(nativeHeaderObserved(page,native.container),true);
   if(state==='disabled')page.configure({enabled:false});else page.resize(950);
   assert.equal(nativeHeaderObserved(page,native.tabs),false);assert.equal(nativeHeaderObserved(page,native.container),false);
@@ -1070,10 +1080,10 @@ test('recycled and removed X articles cannot keep stale overlay cards or results
   assert.deepEqual(page.writes, []);
 });
 
-test('disabled mode and excluded routes hide overlays without changing the page layout', () => {
+test('pause keeps the resume control visible and excluded routes hide the rail without changing layout', () => {
   const page = fixture(); page.configure(); page.intersect();
   assert.equal(page.displayedCards().length, 2);
-  page.configure({ enabled: false }); assert.equal(page.displayedCards().length, 0);
+  page.configure({ enabled: false }); assert.equal(page.displayedCards().length, 2);assert.equal(page.nodes.find(n=>n.className==='rail-toggle').textContent,ui.t('common.resume','zh-CN'));
   page.configure({ enabled: true }); assert.equal(page.displayedCards().length, 2);
   page.location.pathname = '/i/grok'; page.mutate(); assert.equal(page.displayedCards().length, 0);
   page.location.pathname = '/home'; page.mutate(); assert.equal(page.displayedCards().length, 2);
@@ -1806,12 +1816,17 @@ test('verification errors stop both indicators and retry starts fresh without re
   assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,2);assert.deepEqual(page.writes,[]);
 });
 
-test('disconnect and disabled configuration stop verification waits and reject late progress',()=>{
+test('disconnect ends verification waits while pausing preserves an already accepted verification',()=>{
   for(const stop of ['disconnect','disabled']) {
     const page=fixture({postCount:1});page.configure({explanationMode:'preset'});
     const request=page.port.sent.find(message=>message.type==='ANALYZE'),card=page.cards()[0],progress=beginVerification(page,request,card);
     if(stop==='disconnect')page.port.onDisconnect.emit();else page.configure({explanationMode:'preset',enabled:false});
     page.flush();
+    if(stop==='disabled'){
+      assert.equal(progress.wait.hidden,false);assert.equal(progress.box.getAttribute('aria-busy'),'true');
+      page.port.onMessage.emit({type:'UPDATE',requestId:request.requestId,phase:'verify',text:'Continuing accepted verification',verificationText:''});page.flush();
+      assert.match(progress.answer.textContent,/Continuing accepted verification/);assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,1);continue;
+    }
     assert.equal(progress.wait.hidden,true,stop);assert.equal(progress.status.classList.contains('shimmer'),false,stop);
     assert.equal(progress.box.getAttribute('aria-busy'),'false');
     page.port.onMessage.emit({type:'UPDATE',requestId:request.requestId,phase:'verify',text:'Obsolete waiting task',verificationText:''});page.flush();
@@ -3404,8 +3419,8 @@ test('transient CLI disconnection retries one post without disabling other visib
   page.articles[1].rect={...page.articles[1].rect,top:400,bottom:680};page.intersect();page.tick();assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,2);assert.equal(page.cards()[1].testShadow.querySelector('.generate-comments').hidden,false);
 });
 
-test('collapsing, disabling or navigating cancels scheduled retries and late results cannot revive their labels',()=>{
-  for(const action of ['collapse','disable','navigate']){
+test('collapsing or navigating cancels scheduled retries and late results cannot revive their labels',()=>{
+  for(const action of ['collapse','navigate']){
     const page=fixture({postCount:1});page.configure();const analysis=page.port.sent.find(message=>message.type==='ANALYZE'),card=page.cards()[0];retryWait(page,analysis,{partialResult:{provider:'api',text:'Retained until canceled.',sources:[]}});card.testShadow.querySelector('.generate-comments').emit('click');const draft=page.port.sent.find(message=>message.type==='GENERATE_COMMENTS');retryWait(page,draft,{},true);const before=page.port.sent.length;
     if(action==='collapse')page.nodes.find(node=>node.className==='rail-collapse').emit('click');else if(action==='disable')page.configure({enabled:false});else{page.location.pathname='/settings/account';page.tick();}page.flush();
     const cancellations=page.port.sent.slice(before).filter(message=>['CANCEL','CANCEL_ALL'].includes(message.type));assert.ok(cancellations.some(message=>message.type==='CANCEL_ALL')||[analysis,draft].every(request=>cancellations.some(message=>message.requestId===request.requestId)),action);
@@ -3925,4 +3940,60 @@ test('image-only video-only and quote-only posts stay in the nearest preload pos
   page.configure({prefetchCount:5});page.intersect();page.tick();
   assert.deepEqual(analyzeMessages(page).filter(m=>m.prefetch).map(m=>m.post.id),['104','105','106','107','108']);
  }
+});
+
+
+const savedFinding=()=>({text:'Previously checked with evidence.',sources:[],searched:true,verificationStatus:'completed',model:'grok-4.3',usage:{total_tokens:40}});
+
+test('saved answers display while paused without any new analysis',()=>{
+ const page=fixture({postCount:1,cacheLookup:savedFinding});page.configure({enabled:false});
+ assert.equal(page.cards()[0].testShadow.querySelector('.answer').textContent,savedFinding().text);
+ assert.equal(analyzeMessages(page).length,0);assert.equal(page.nodes.find(n=>n.tagName==='GROK-FIRST-OVERLAY').hidden,false);
+});
+
+test('paused misses stay idle and the rail has one pause resume toggle with no custom modes',()=>{
+ const page=fixture({postCount:12});page.configure({enabled:false,prefetchCount:5});page.intersect();page.tick(10000);
+ assert.equal(analyzeMessages(page).length,0);
+ const toggle=page.nodes.find(n=>n.className==='rail-toggle');assert.ok(toggle);assert.equal(toggle.textContent,ui.t('common.resume','zh-CN'));
+ toggle.emit('click');assert.ok(page.port.sent.some(m=>m.type==='SET_ENABLED'&&m.enabled===true));
+ page.configure({enabled:true,prefetchCount:5});page.tick();
+ assert.deepEqual(analyzeMessages(page).filter(m=>m.prefetch).map(m=>m.post.id),['104','105','106','107','108']);
+ assert.equal(toggle.textContent,ui.t('common.pause','zh-CN'));
+ assert.equal(page.document.querySelectorAll('superx-post-check').length,0);
+});
+
+test('duplicate visible copies share a passive lookup and saved result',()=>{
+ const page=fixture({postCount:2,cacheLookup:'hold'});page.articles[1].postData={...page.articles[0].postData};page.configure({enabled:false});
+ const lookups=page.port.sent.filter(m=>m.type==='LOOKUP_CACHED_POST');assert.equal(lookups.length,1);
+ page.port.onMessage.emit({type:'RESULT',requestId:lookups[0].requestId,cacheLookup:true,cached:true,result:savedFinding()});page.flush();
+ assert.equal(page.cards().filter(c=>c.testShadow.querySelector('.answer').textContent===savedFinding().text).length,2);
+ assert.equal(analyzeMessages(page).length,0);
+});
+
+test('passive native cache lookups carry the current public account and never initialize Grok',()=>{
+ const page=fixture({postCount:1,cacheLookup:savedFinding});
+ const originalQuery=page.document.querySelector.bind(page.document);
+ page.document.querySelector=selector=>selector==='a[data-testid="AppTabBar_Profile_Link"]'?{href:'https://x.com/test_account'}:originalQuery(selector);
+ page.configure({provider:'x-native',enabled:false});page.intersect();page.tick();
+ const lookups=page.port.sent.filter(m=>m.type==='LOOKUP_CACHED_POST');assert.ok(lookups.length);assert.equal(lookups.at(-1).nativeAccount,'https://x.com/test_account');
+ assert.equal(analyzeMessages(page).length,0);assert.equal(page.nativeHooks.run,0);
+});
+
+test('pausing preserves started preload and explicit reanalysis while withdrawing unstarted automatic work',()=>{
+ const page=fixture({postCount:12});page.configure({prefetchCount:5});page.intersect();page.tick();
+ const running=analyzeMessages(page).find(m=>m.prefetch),queued=analyzeMessages(page).find(m=>m.prefetch&&m!==running);
+ page.port.onMessage.emit({type:'START',requestId:running.requestId});
+ const before=page.port.sent.length;page.configure({enabled:false,prefetchCount:5});
+ const cancellations=page.port.sent.slice(before).filter(m=>m.type.startsWith('CANCEL'));
+ assert.equal(cancellations.some(m=>m.type==='CANCEL_ALL'||m.requestId===running.requestId),false);
+ assert.ok(cancellations.some(m=>m.type==='CANCEL_IF_QUEUED'&&m.requestId===queued.requestId&&m.preserveStarted));
+ completeFeedRequest(page,running,'Finished while paused.');assert.ok(page.nodes.some(n=>n.textContent.includes('Finished while paused.')));
+});
+
+test('a confirmed image rejection names the media problem instead of suggesting a model change',()=>{
+  const {page,request,card}=tokenFixture();
+  page.port.onMessage.emit({type:'ERROR',requestId:request.requestId,code:'API_IMAGE_INPUT',verificationFailure:{stage:'verify',code:'ACCESS',errorCode:'API_IMAGE_INPUT',httpStatus:400,providerCode:'invalid_image'},requestDiagnostics:{failureOrigin:'http',transportStatus:400}});page.flush();
+  assert.equal(card.testShadow.querySelector('.status').textContent,ui.t('error.apiImageInput','zh-CN'));
+  assert.match(card.testShadow.querySelector('.diagnostics').textContent,/API_IMAGE_INPUT/);
+  assert.doesNotMatch(card.testShadow.querySelector('.status').textContent,/模型/);
 });

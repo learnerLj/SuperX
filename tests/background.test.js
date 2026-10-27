@@ -187,6 +187,7 @@ function createBackground(options = {}) {
     },
     nativeCalls,chrome, permissionState, local, session, alarmCalls,oauthManager,oauthCalls, buildStore,buildState,buildStoreCalls, keyStore:options.keyStore||keyStore, keyStoreState, keyStoreCalls, apiCalls, commentCalls, buildCalls,buildCommentCalls,buildStatusCalls,runtimeMessages, createdTabs, removedTabs, tabMessages, tabs, windows, createdWindows, removedWindows, deadlines,
     now() { return now; },
+    runtimeCounts() { return clone(vm.runInContext('({jobs:jobs.size,queued:queue.length,running:runningJobs.size})',context)); },
     advance(ms) { now += ms; },
     advanceRetryTimers(ms) {
       now+=ms;
@@ -533,8 +534,8 @@ test('source changes cancel private draft work and discard late output without f
   pending.resolve({text:'PRIVATE_LATE_FINDING',provider:'api'});await tick();await tick();assert.equal(port.messages.some(value=>value.type==='RESULT'&&value.requestId==='draft:old-source'),false);
   assert.doesNotMatch(JSON.stringify({local:bg.local.data,session:bg.session.data}),/PRIVATE_OLD_DRAFT|PRIVATE_LATE_FINDING/);assert.equal(bg.buildCalls.length,0);
 });
-test('CONFIG exposes the task cancellation revision for enabled, answer-language and concurrency changes',async()=>{
-  for(const change of [{enabled:false},{language:'fr'},{apiConcurrency:2}]){
+test('CONFIG exposes the task cancellation revision for answer-language and concurrency changes',async()=>{
+  for(const change of [{language:'fr'},{apiConcurrency:2}]){
     const pending=deferred(),bg=createBackground({apiRun:()=>pending.promise});await bg.ready();
     const before=await bg.message({type:'GET_CONFIG'});assert.equal(Number.isInteger(before.taskRevision),true);
     const port=bg.connect();await until(()=>port.messages.some(value=>value.type==='CONFIG'));
@@ -740,6 +741,17 @@ const safeRequestDiagnostics={failureOrigin:'stream',transportStatus:200,request
 const diagnosticFailure={stage:'verify',code:'ACCESS',httpStatus:402,providerCode:'spending_limit',errorCode:'API_ERROR'};
 async function readDiagnostics(bg) {return clone(await bg.message({type:'GET_API_DIAGNOSTICS'}));}
 function diagnosticError(extra={}) {return Object.assign(new Error('PRIVATE_RAW_ERROR_BODY'),{code:'API_ERROR',verificationFailure:diagnosticFailure,requestDiagnostics:safeRequestDiagnostics,...extra});}
+
+test('specific image input errors remain terminal and retain safe diagnostic classification',async()=>{
+  const failure={stage:'verify',code:'ACCESS',httpStatus:400,providerCode:'invalid_image',errorCode:'API_IMAGE_INPUT'};
+  const diagnostics={...safeRequestDiagnostics,failureOrigin:'http',transportStatus:400};delete diagnostics.providerMessage;
+  const bg=createBackground({apiRun:()=>{throw diagnosticError({code:'API_IMAGE_INPUT',verificationFailure:failure,requestDiagnostics:diagnostics});}});
+  await bg.ready();const result=await analyze(bg,bg.connect(),'image-input-failure');
+  assert.equal(result.code,'API_IMAGE_INPUT');assert.equal(bg.apiCalls.length,1);
+  const log=await readDiagnostics(bg);assert.equal(log.entries[0].code,'API_IMAGE_INPUT');
+  assert.deepEqual(log.entries[0].verificationFailure,failure);
+  assert.equal(log.entries[0].requestDiagnostics.providerMessage,undefined);
+});
 
 test('request diagnostics preserve stream transport versus event failure and usage without mixing billing fields',async()=>{
   const bg=createBackground({apiRun:()=>{throw diagnosticError({usage:{total_tokens:9},model:'grok-4.3',requestDiagnostics:{...safeRequestDiagnostics,apiKey:'PRIVATE_KEY',post:post(100),prompt:'PRIVATE_PROMPT',analysis:'PRIVATE_ANALYSIS',usage:{total_tokens:999},accountId:'PRIVATE_ACCOUNT'}});}});await bg.ready();const port=bg.connect();const result=await analyze(bg,port,'diagnostic-stream');
@@ -1457,7 +1469,7 @@ test('old API answers with mixed output languages are regenerated and the new la
   assert.equal(restarted.apiCalls.length,0);
 });
 
-test('0.6.1 API analysis caches regenerate naturally in every mode and fresh answers survive a worker restart',async()=>{
+test('0.6.1 API analysis caches regenerate naturally while running or paused and fresh answers survive a worker restart',async()=>{
   // Frozen release identities model existing installations, including custom
   // drafts whose text is unchanged by the new shared provider instructions.
   const oldExplain='Give a brief explanation of the meaning and essential context. Use no more than two short paragraphs, about three concise sentences in total.';
@@ -1535,7 +1547,7 @@ test('0.6.2 excerpt-based caches cannot substitute for full-post answers in any 
   }
 });
 
-test('0.6.4 API process narration caches regenerate in every mode and reader-facing answers survive a worker restart',async()=>{
+test('0.6.4 API process narration caches regenerate while running or paused and reader-facing answers survive a worker restart',async()=>{
   const input={...post(100),text:'This English post explains a practical workflow.',language:'en'};
   // Freeze the shipped 0.6.4 rules and identity, including unchanged user
   // drafts, so a new default task cannot mask a missing provider-rule revision.
@@ -4087,4 +4099,265 @@ test('lookahead tuning preserves ten running native jobs, revision and persisten
  for(let i=0;i<10;i++)port.send({type:'ANALYZE',requestId:'tuning-'+i,post:post(4700+i),nativeAccount:NATIVE_ALICE,prefetch:true});await until(()=>bg.nativeCalls.length===10);const revision=(await bg.message({type:'GET_CONFIG'})).taskRevision;
  await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,prefetchCount:0,prefetchAll:true}});assert.equal((await bg.message({type:'GET_CONFIG'})).taskRevision,revision);assert.equal(bg.nativeCalls.some(call=>call.signal.aborted),false);
  for(let i=0;i<10;i++)gates[i].resolve({text:'Native '+i,provider:'x-native',verificationStatus:'completed'});await until(()=>port.messages.filter(m=>m.type==='RESULT').length===10);assert.equal((await nativeAnalyze(bg,port,'tuning-cache-reuse',4700)).cached,true);assert.equal(bg.nativeCalls.length,10);
+});
+
+test('pause preserves started work and accepted forced reanalysis but withdraws unstarted automatic jobs',async()=>{
+ const held=deferred(),bg=createBackground({settings:{apiConcurrency:1},apiRun:async call=>{
+  if(call.post.id==='100')await held.promise;return {provider:'api',text:'Checked '+call.post.id};
+ }});await bg.ready();const port=bg.connect();
+ port.send({type:'ANALYZE',requestId:'pause-running',post:post(100)});await until(()=>bg.apiCalls.length===1);
+ port.send({type:'ANALYZE',requestId:'pause-force-queue',post:post(101),force:true});
+ port.send({type:'ANALYZE',requestId:'pause-auto-queue',post:post(102)});
+ await until(()=>bg.queuedRequests().length===2);const before=(await bg.message({type:'GET_CONFIG'})).taskRevision;
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,enabled:false}});
+ assert.equal((await bg.message({type:'GET_CONFIG'})).taskRevision,before);assert.equal(bg.apiCalls[0].signal.aborted,false);
+ assert.ok(port.messages.some(m=>m.requestId==='pause-auto-queue'&&m.code==='PAUSED'));
+ assert.deepEqual(bg.queuedRequests(),['pause-force-queue']);
+ assert.equal((await analyze(bg,port,'paused-new',103,{force:true})).code,'PAUSED');
+ held.resolve();await until(()=>port.messages.some(m=>m.requestId==='pause-force-queue'&&m.type==='RESULT'));
+ assert.deepEqual(bg.apiCalls.map(call=>call.post.id),['100','101']);
+});
+
+test('collapsing the rail preserves accepted force work through a subsequent pause',async()=>{
+ const held=deferred(),bg=createBackground({settings:{apiConcurrency:1},apiRun:async call=>{
+  if(call.post.id==='100')await held.promise;return {provider:'api',text:'Checked '+call.post.id};
+ }});await bg.ready();const port=bg.connect();
+ port.send({type:'ANALYZE',requestId:'collapse-started',post:post(100)});await until(()=>bg.apiCalls.length===1);
+ port.send({type:'ANALYZE',requestId:'collapse-force',post:post(101),force:true});
+ port.send({type:'ANALYZE',requestId:'collapse-automatic',post:post(102)});await until(()=>bg.queuedRequests().length===2);
+ port.send({type:'SET_RAIL_COLLAPSED',collapsed:true});await until(()=>bg.session.data.railStates?.[7]===true);
+ assert.ok(port.messages.some(m=>m.requestId==='collapse-automatic'&&m.code==='RAIL_COLLAPSED'));
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,enabled:false}});
+ assert.equal(bg.apiCalls[0].signal.aborted,false);held.resolve();await until(()=>port.messages.some(m=>m.requestId==='collapse-force'&&m.type==='RESULT'));
+ assert.deepEqual(bg.apiCalls.map(call=>call.post.id),['100','101']);
+});
+
+for(const prefetch of [false,true])test('started '+(prefetch?'prefetch':'visible')+' retry survives pause'+(prefetch?' and collapse':''),async()=>{
+ let attempts=0;const bg=createBackground({manualRetryTimers:true,apiRun:()=>{
+  if(++attempts===1)throw capacityError();return {provider:'api',text:'Recovered answer.'};
+ }});await bg.ready();const port=bg.connect();
+ port.send({type:'ANALYZE',requestId:'retained-retry',post:post(100),prefetch});await until(()=>port.messages.some(m=>m.type==='RETRY_WAIT'));
+ if(prefetch){port.send({type:'SET_RAIL_COLLAPSED',collapsed:true});await until(()=>bg.session.data.railStates?.[7]===true);}
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,enabled:false}});
+ bg.advanceRetryTimers(3000);await until(()=>port.messages.some(m=>m.requestId==='retained-retry'&&m.type==='RESULT'));assert.equal(attempts,2);
+});
+
+test('pause preserves private drafts and their task revision',async()=>{
+ const held=deferred(),bg=createBackground({apiRun:()=>held.promise});await bg.ready();const port=bg.connect();
+ port.send({type:'ANALYZE_DRAFT',requestId:'draft:pause',draft:{id:'pause',text:'PRIVATE_DRAFT'}});await until(()=>bg.apiCalls.length===1);
+ const before=(await bg.message({type:'GET_CONFIG'})).taskRevision;await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,enabled:false}});
+ assert.equal(bg.apiCalls[0].signal.aborted,false);assert.equal((await bg.message({type:'GET_CONFIG'})).taskRevision,before);
+ held.resolve({text:'Private answer.',provider:'api'});await until(()=>port.messages.some(m=>m.requestId==='draft:pause'&&m.type==='RESULT'));
+});
+
+for(const phase of ['answerGet','publicConfig'])test('pause during '+phase+' refuses an automatic cache miss before generation',async()=>{
+ const blocked=deferred();let hold=false,entered=false;
+ const bg=createBackground({answerGet:async()=>{if(hold&&phase==='answerGet'){entered=true;await blocked.promise;}},sessionGet:async keys=>{if(hold&&phase==='publicConfig'&&keys==='apiKey'&&!entered){entered=true;await blocked.promise;}}});
+ await bg.ready();const port=bg.connect();await until(()=>port.messages.some(m=>m.type==='CONFIG'));
+ hold=true;port.send({type:'ANALYZE',requestId:'pause-pending',post:post(100)});await until(()=>entered);
+ await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,enabled:false}});hold=false;blocked.resolve();
+ await until(()=>port.messages.some(m=>m.requestId==='pause-pending'&&m.type==='ERROR'));
+ assert.equal(port.messages.find(m=>m.requestId==='pause-pending'&&m.type==='ERROR').code,'PAUSED');assert.equal(bg.apiCalls.length,0);
+});
+
+async function lookupCachedPost(bg,port,requestId,selectedPost=post(100)){
+  port.send({type:'LOOKUP_CACHED_POST',requestId,post:selectedPost});
+  await until(()=>port.messages.some(m=>m.requestId===requestId&&['RESULT','CACHE_MISS'].includes(m.type)),requestId);
+  return port.messages.findLast(m=>m.requestId===requestId&&['RESULT','CACHE_MISS'].includes(m.type));
+}
+
+test('cache-only post lookup displays existing answers while running or paused and never generates on a miss',async()=>{
+  const bg=createBackground({apiRun:()=>({provider:'api',text:'Existing checked answer.',verificationStatus:'completed',usage:{total_tokens:12}})});
+  await bg.ready();const port=bg.connect();await analyze(bg,port,'seed-cache-only');
+  await until(async()=>Object.keys(await bg.cacheSnapshot()).length===1);await tick();
+  for(const enabled of [true,false]){
+    const mode=String(enabled);
+    await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,enabled}});
+    const beforeHistory=JSON.stringify(bg.local.data.superxHistory),beforeCalls=bg.apiCalls.length,beforeTokens=bg.oauthCalls.filter(c=>c.type==='token').length;
+    const result=await lookupCachedPost(bg,port,'lookup-'+mode);
+    assert.equal(result.type,'RESULT');assert.equal(result.cached,true);assert.equal(result.cacheLookup,true);assert.equal(result.result.text,'Existing checked answer.');
+    assert.equal((await lookupCachedPost(bg,port,'miss-'+mode,post(101))).type,'CACHE_MISS');
+    assert.equal(bg.apiCalls.length,beforeCalls);assert.equal(bg.oauthCalls.filter(c=>c.type==='token').length,beforeTokens);
+    assert.equal(JSON.stringify(bg.local.data.superxHistory),beforeHistory);assert.equal(bg.buildCalls.length,0);
+    assert.equal(port.messages.some(m=>['START','QUEUED'].includes(m.type)&&m.requestId==='lookup-'+mode),false);
+  }
+});
+
+test('cache-only lookup preserves model language search and prompt partitions without TTL expiration or generation',async()=>{
+  const bg=createBackground();await bg.ready();const port=bg.connect();await analyze(bg,port,'cache-partition-seed');
+  const initial=clone(bg.local.data.settings);
+  for(const [index,change]of [{language:'ja'},{apiModel:'grok-4.5'},{webSearch:false},{explanationMode:'custom',verifyPrompt:'A different verification policy.'}].entries()){
+    await bg.message({type:'SAVE_SETTINGS',settings:{...initial,...change}});
+    assert.equal((await lookupCachedPost(bg,port,'partition-'+index)).type,'CACHE_MISS');
+  }
+  await bg.message({type:'SAVE_SETTINGS',settings:initial});assert.equal((await lookupCachedPost(bg,port,'partition-restored')).type,'RESULT');
+  bg.advance(30*24*60*60*1000);assert.equal((await lookupCachedPost(bg,port,'persistent-lookup')).type,'RESULT');
+  for(const [index,value]of [null,{...post(100),url:'https://other.example/status/100'},{...post(100),id:'999'},{kind:'draft',text:'PRIVATE_DRAFT'}].entries())
+    assert.equal((await lookupCachedPost(bg,port,'invalid-lookup-'+index,value)).type,'CACHE_MISS');
+  assert.equal(bg.apiCalls.length,1);
+});
+
+test('cache lookup works during same-account OAuth refresh but waits for unknown identity and never crosses accounts',async()=>{
+  const seed=createBackground({settings:{provider:'oauth'},oauthState:oauthConnected(),apiRun:()=>({provider:'oauth',text:'Account A cached answer.',verificationStatus:'completed'})});
+  await seed.ready();const port=seed.connect();await analyze(seed,port,'oauth-lookup-seed');await until(async()=>Object.keys(await seed.cacheSnapshot()).length===1);
+  const local=clone(seed.local.data),session=clone(seed.session.data);
+  seed.oauthManager.change({state:'refreshing',connected:false});await tick();
+  const calls=seed.apiCalls.length,tokens=seed.oauthCalls.filter(c=>c.type==='token').length;
+  assert.equal((await lookupCachedPost(seed,port,'refresh-lookup')).result.text,'Account A cached answer.');
+  assert.equal(seed.apiCalls.length,calls);assert.equal(seed.oauthCalls.filter(c=>c.type==='token').length,tokens);
+  const restoring=deferred(),cold=createBackground({local,session,indexedDB:seed.indexedDB,oauthState:{state:'restoring'},oauthInitialize:async manager=>{await restoring.promise;manager.change(oauthConnected());}});
+  await cold.ready();const coldPort=cold.connect(),pending=await lookupCachedPost(cold,coldPort,'unknown-account-lookup');
+  assert.equal(pending.type,'CACHE_MISS');assert.equal(pending.deferred,true);assert.equal(cold.apiCalls.length,0);
+  restoring.resolve();await until(()=>cold.oauthManager.status().connected);
+  assert.equal((await lookupCachedPost(cold,coldPort,'known-account-lookup')).result.text,'Account A cached answer.');assert.equal(cold.apiCalls.length,0);
+  seed.oauthManager.change(oauthConnected(OAUTH_ACCOUNT_B));await tick();assert.equal((await lookupCachedPost(seed,port,'other-account-lookup')).type,'CACHE_MISS');
+});
+
+test('cache lookup does not probe a disconnected Build service or bypass changed API credentials',async()=>{
+  let connected=true;
+  const build=createBackground({settings:{provider:'build'},buildStatus:()=>({connected,installed:true,available:connected,authenticated:true,version:'1.0.60'})});
+  await build.ready();await build.configureBuild();await build.message({type:'GET_CONFIG'});const buildPort=build.connect();await analyze(build,buildPort,'build-cache-seed');
+  connected=false;await build.message({type:'GET_CONFIG'});
+  const probes=build.buildStatusCalls.length,runs=build.buildCalls.length;
+  assert.equal((await lookupCachedPost(build,buildPort,'offline-build-lookup')).type,'RESULT');
+  assert.equal((await lookupCachedPost(build,buildPort,'offline-build-miss',post(101))).type,'CACHE_MISS');
+  assert.equal(build.buildStatusCalls.length,probes);assert.equal(build.buildCalls.length,runs);
+  const api=createBackground();await api.ready();const apiPort=api.connect();await analyze(api,apiPort,'key-cache-seed');
+  await api.message({type:'SAVE_KEY',apiKey:'different-credential',remember:false});
+  assert.equal((await lookupCachedPost(api,apiPort,'changed-key-lookup')).type,'CACHE_MISS');assert.equal(api.apiCalls.length,1);
+});
+
+test('cache-only hit and miss perform no credential storage or transport preparation and reserve no task slot',async()=>{
+  let checking=false,reads=0;
+  const observeRead=()=>{if(checking)reads++;};
+  const bg=createBackground({sessionGet:observeRead,localGet:observeRead});await bg.ready();const port=bg.connect();
+  await analyze(bg,port,'read-only-seed');await until(async()=>Object.keys(await bg.cacheSnapshot()).length===1);await tick();await tick();
+  const before=bg.runtimeCounts(),deadlines=bg.deadlines.length,apiCalls=bg.apiCalls.length,oauthCalls=bg.oauthCalls.length;
+  checking=true;
+  assert.equal((await lookupCachedPost(bg,port,'read-only-hit')).type,'RESULT');
+  assert.equal((await lookupCachedPost(bg,port,'read-only-miss',post(200))).type,'CACHE_MISS');
+  checking=false;
+  assert.equal(reads,0);assert.deepEqual(bg.runtimeCounts(),before);assert.equal(bg.deadlines.length,deadlines);
+  assert.equal(bg.apiCalls.length,apiCalls);assert.equal(bg.oauthCalls.length,oauthCalls);
+});
+
+test('a cache lookup received before startup cannot reveal a result after credentials change',async()=>{
+  const seed=createBackground();await seed.ready();await analyze(seed,seed.connect(),'receipt-seed');
+  await until(async()=>Object.keys(await seed.cacheSnapshot()).length===1);
+  const gate=deferred();let waiting=false;
+  const bg=createBackground({local:clone(seed.local.data),session:clone(seed.session.data),indexedDB:seed.indexedDB,localGet:async()=>{waiting=true;await gate.promise;}});
+  const port=bg.connect();port.send({type:'LOOKUP_CACHED_POST',requestId:'stale-lookup',post:post(100)});
+  const replacing=bg.message({type:'SAVE_KEY',apiKey:'new-lookup-credential',remember:false});await until(()=>waiting);
+  gate.resolve();await bg.ready();assert.equal((await replacing).ok,true);
+  await until(()=>port.messages.some(m=>m.requestId==='stale-lookup'));
+  assert.equal(port.messages.find(m=>m.requestId==='stale-lookup').type,'CACHE_MISS');assert.equal(bg.apiCalls.length,0);
+});
+
+const passiveNativeLookup=(bg,port,requestId,selectedPost=post(3000),nativeAccount=NATIVE_ALICE)=>{
+  port.send({type:'LOOKUP_CACHED_POST',requestId,post:selectedPost,nativeAccount});
+  return until(()=>port.messages.some(m=>m.requestId===requestId&&['RESULT','CACHE_MISS'].includes(m.type)),requestId)
+    .then(()=>port.messages.findLast(m=>m.requestId===requestId&&['RESULT','CACHE_MISS'].includes(m.type)));
+};
+
+test('passive native cache uses the analysis identity without transport, history or TTL',async()=>{
+  const bg=createBackground({settings:{provider:'x-native',language:'en'}});await bg.ready();const port=bg.connect();
+  await nativeAnalyze(bg,port,'passive-native-seed');await bg.cacheSnapshot();
+  const oldSettings=clone(bg.local.data.settings),beforeHistory=JSON.stringify(bg.local.data.superxHistory);
+  bg.advance(365*24*60*60*1000);
+  for(const enabled of [true,false]){
+    const mode=String(enabled);
+    await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,enabled}});
+    const counts=bg.runtimeCounts(),deadlines=bg.deadlines.length;
+    const hit=await passiveNativeLookup(bg,port,'passive-native-'+mode,{...post(3000),url:'https://twitter.com/author/status/3000?ref=feed',text:'Changed truncated preview',textTruncated:true},'https://twitter.com/ALICE');
+    assert.equal(hit.type,'RESULT');assert.equal(hit.cached,true);assert.equal(hit.cacheLookup,true);assert.equal(hit.result.model,'x-web');
+    assert.equal((await passiveNativeLookup(bg,port,'native-miss-'+mode,post(3001))).type,'CACHE_MISS');
+    assert.equal((await passiveNativeLookup(bg,port,'native-bob-'+mode,post(3000),NATIVE_BOB)).type,'CACHE_MISS');
+    const unknown=await passiveNativeLookup(bg,port,'native-unknown-'+mode,post(3000),'');assert.equal(unknown.type,'CACHE_MISS');assert.equal(unknown.deferred,true);
+    assert.deepEqual(bg.runtimeCounts(),counts);assert.equal(bg.deadlines.length,deadlines);
+  }
+  for(const [index,change]of [{language:'ja'},{explanationMode:'custom',verifyPrompt:'New native policy.'},{provider:'api'}].entries()){
+    await bg.message({type:'SAVE_SETTINGS',settings:{...oldSettings,...change}});
+    assert.equal((await passiveNativeLookup(bg,port,'native-partition-'+index)).type,'CACHE_MISS');
+  }
+  assert.equal(bg.nativeCalls.length,1);assert.equal(bg.apiCalls.length,0);assert.equal(bg.buildCalls.length,0);
+  assert.equal(bg.oauthCalls.some(c=>c.type==='token'),false);assert.equal(JSON.stringify(bg.local.data.superxHistory),beforeHistory);
+});
+
+for(const change of ['clear','cancel','cancel-all','disconnect','revision','account-roundtrip'])test('passive native cache hit is invalidated after asynchronous read by '+change,async()=>{
+  const gate=deferred();let block=false,entered=false,captured;
+  const bg=createBackground({settings:{provider:'x-native'},answerGetResult:async result=>{if(block){captured=result;entered=true;await gate.promise;}}});
+  await bg.ready();const port=bg.connect();await nativeAnalyze(bg,port,'passive-race-seed');await bg.cacheSnapshot();block=true;
+  port.send({type:'LOOKUP_CACHED_POST',requestId:'passive-race',post:post(3000),nativeAccount:NATIVE_ALICE});await until(()=>entered);assert.ok(captured);
+  if(change==='clear')await bg.message({type:'CLEAR_CACHE'});
+  if(change==='cancel')port.send({type:'CANCEL',requestId:'passive-race'});
+  if(change==='cancel-all')port.send({type:'CANCEL_ALL'});
+  if(change==='disconnect')port.disconnect();
+  if(change==='revision')await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,language:'ja'}});
+  if(change==='account-roundtrip'){
+    port.send({type:'NATIVE_ACCOUNT_CHANGED',nativeAccount:NATIVE_BOB});
+    port.send({type:'NATIVE_ACCOUNT_CHANGED',nativeAccount:NATIVE_ALICE});
+  }
+  // CANCEL_ALL joins ready.then; settle its receipt before releasing IDB.
+  await tick();block=false;gate.resolve();await tick();await tick();await tick();
+  assert.equal(port.messages.some(m=>m.requestId==='passive-race'&&m.type==='RESULT'),false);
+  assert.equal(bg.nativeCalls.length,1);assert.equal(bg.apiCalls.length,0);assert.equal(bg.buildCalls.length,0);
+  assert.equal(port.messages.some(m=>m.requestId==='passive-race'&&['QUEUED','START'].includes(m.type)),false);
+});
+
+test('a passive lookup waits for its pending cache write and for a clear queued behind that write',async()=>{
+  const gate=deferred();let putEntered=false,reads=0;
+  const bg=createBackground({settings:{provider:'x-native'},answerPut:async()=>{putEntered=true;await gate.promise;},answerGet:()=>{reads++;}});
+  await bg.ready();const port=bg.connect();await nativeAnalyze(bg,port,'passive-barrier-seed');await until(()=>putEntered);
+  port.send({type:'LOOKUP_CACHED_POST',requestId:'before-clear-passive',post:post(3000),nativeAccount:NATIVE_ALICE});await tick();
+  assert.equal(port.messages.some(m=>m.requestId==='before-clear-passive'),false);
+  let cleared=false;const clearing=bg.message({type:'CLEAR_CACHE'}).then(result=>{cleared=true;return result;});await tick();
+  const readsBefore=reads;
+  port.send({type:'LOOKUP_CACHED_POST',requestId:'after-clear-passive',post:post(3000),nativeAccount:NATIVE_ALICE});await tick();
+  assert.equal(cleared,false);assert.equal(reads,readsBefore);assert.equal(port.messages.some(m=>m.requestId==='after-clear-passive'),false);
+  gate.resolve();assert.equal((await clearing).ok,true);
+  await until(()=>port.messages.filter(m=>['before-clear-passive','after-clear-passive'].includes(m.requestId)).length===2);
+  for(const requestId of ['before-clear-passive','after-clear-passive'])assert.equal(port.messages.find(m=>m.requestId===requestId).type,'CACHE_MISS');
+  assert.deepEqual(await bg.cacheSnapshot(),{});assert.equal(bg.nativeCalls.length,1);
+});
+
+test('pausing ten running native prefetches cancels queued work and resume reuses completed answers',async()=>{
+ const gates=Array.from({length:10},()=>deferred());
+ const bg=createBackground({settings:{provider:'x-native'},nativeRun:(_,h)=>h.nativeCalls.length<=10?gates[h.nativeCalls.length-1].promise:{text:'Accepted forced answer',provider:'x-native',verificationStatus:'completed'}});
+ await bg.ready();const port=bg.connect();
+ for(let i=0;i<10;i++)port.send({type:'ANALYZE',requestId:'pause-native-'+i,post:post(5000+i),nativeAccount:NATIVE_ALICE,prefetch:true});
+ await until(()=>bg.nativeCalls.length===10);
+ port.send({type:'ANALYZE',requestId:'pause-native-waiting',post:post(5010),nativeAccount:NATIVE_ALICE,prefetch:true});
+ port.send({type:'ANALYZE',requestId:'pause-native-force',post:post(5011),nativeAccount:NATIVE_ALICE,force:true});await until(()=>bg.queuedRequests().length===2);
+ const revision=(await bg.message({type:'GET_CONFIG'})).taskRevision;
+ port.send({type:'SET_ENABLED',enabled:false});await until(()=>bg.local.data.settings.enabled===false);
+ assert.equal((await bg.message({type:'GET_CONFIG'})).taskRevision,revision);assert.equal(bg.nativeCalls.some(call=>call.signal.aborted),false);
+ assert.ok(port.messages.some(m=>m.requestId==='pause-native-waiting'&&m.code==='PAUSED'));assert.deepEqual(bg.queuedRequests(),['pause-native-force']);
+ assert.equal((await nativeAnalyze(bg,port,'paused-native-new',5012,{force:true})).code,'PAUSED');
+ for(let i=0;i<10;i++)gates[i].resolve({text:'Answer '+i,provider:'x-native',verificationStatus:'completed'});
+ await until(()=>port.messages.filter(m=>m.type==='RESULT').length===11);assert.equal(bg.nativeCalls.length,11);
+ port.send({type:'SET_ENABLED',enabled:true});await until(()=>bg.local.data.settings.enabled===true);
+ assert.equal((await nativeAnalyze(bg,port,'resumed-native-cache',5000)).cached,true);assert.equal(bg.nativeCalls.length,11);
+});
+
+for(const provider of ['api','oauth','build'])test('passive '+provider+' read cannot publish across a credential generation change',async()=>{
+  const gate=deferred();let block=false,entered=false;
+  const bg=createBackground({settings:{provider},oauthState:oauthConnected(),answerGetResult:async value=>{if(block){assert.ok(value);entered=true;await gate.promise;}}});
+  await bg.ready();if(provider==='build'){await bg.configureBuild();await bg.message({type:'GET_CONFIG'});}
+  const port=bg.connect();await analyze(bg,port,'credential-passive-seed');await bg.cacheSnapshot();
+  const calls=bg.apiCalls.length,buildCalls=bg.buildCalls.length,tokens=bg.oauthCalls.filter(c=>c.type==='token').length;
+  block=true;port.send({type:'LOOKUP_CACHED_POST',requestId:'credential-passive-read',post:post(100)});await until(()=>entered);
+  if(provider==='api')await bg.message({type:'SAVE_KEY',apiKey:'passive-replacement-key',remember:false});
+  if(provider==='build')await bg.message({type:'SAVE_BUILD_CONNECTION',secret:'superx_'+'f'.repeat(64),port:2419});
+  if(provider==='oauth'){bg.oauthManager.change(oauthConnected(OAUTH_ACCOUNT_B));await tick();}
+  block=false;gate.resolve();await until(()=>port.messages.some(m=>m.requestId==='credential-passive-read'));
+  assert.equal(port.messages.find(m=>m.requestId==='credential-passive-read').type,'CACHE_MISS');
+  assert.equal(bg.apiCalls.length,calls);assert.equal(bg.buildCalls.length,buildCalls);assert.equal(bg.oauthCalls.filter(c=>c.type==='token').length,tokens);
+});
+
+test('passive persistent-cache failure reports a miss without authorizing a provider request',async()=>{
+  let fail=false;const bg=createBackground({settings:{provider:'x-native'},answerGet:()=>{if(fail)throw new Error('IndexedDB unavailable');}});
+  await bg.ready();const port=bg.connect();await nativeAnalyze(bg,port,'passive-storage-seed');await bg.cacheSnapshot();fail=true;
+  assert.equal((await passiveNativeLookup(bg,port,'passive-storage-failed')).type,'CACHE_MISS');
+  assert.equal(bg.nativeCalls.length,1);assert.equal(bg.apiCalls.length,0);assert.equal((await bg.message({type:'GET_CONFIG'})).answerCacheReady,false);
+  assert.equal(port.messages.some(m=>m.requestId==='passive-storage-failed'&&['START','QUEUED'].includes(m.type)),false);
 });

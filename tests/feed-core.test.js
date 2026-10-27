@@ -2554,3 +2554,76 @@ test('lookahead defaults and normalized bounds are independent scheduling settin
  assert.equal(core.normalizeSettings({prefetchCount:0,prefetchAll:true}).prefetchAll,true);assert.equal(core.normalizeSettings({prefetchAll:'true'}).prefetchAll,false);
  const a=core.normalizeSettings({provider:'api',prefetchCount:0}),b=core.normalizeSettings({...a,prefetchCount:100,prefetchAll:true});const input={id:'1',url:'https://x.com/author/status/1',text:'A claim',language:'en'};assert.equal(core.apiPostIdentity(input,a),core.apiPostIdentity(input,b));
 });
+
+test('post identity and metadata ignore hidden retained headers before the visible header',()=>{
+  for(const attrs of [{hidden:''},{'aria-hidden':'true'},{style:'display:none'},{style:'visibility:hidden'}]){
+    const stale=e('div',attrs,[header('stale','99','2020-01-01T00:00:00.000Z')]);
+    const article=e('article',{},[stale,header('current','100'),tweetText('Current visible post.')]);
+    for(const result of [core.extractPost(article),core.extractPostContext(article)]){
+      assert.equal(result.url,'https://x.com/current/status/100');assert.equal(result.author,'Name of current @current');
+      assert.equal(result.timestamp,'2026-10-05T01:00:00.000Z');
+    }
+  }
+});
+
+test('a hidden timestamp does not turn its visible link into the preferred post permalink',()=>{
+  const stale=e('a',{href:'/stale/status/99'},[e('time',{hidden:'',datetime:'2020-01-01T00:00:00.000Z'},[],'old')]);
+  const article=e('article',{},[stale,header('current','100'),tweetText('Current visible post.')]);
+  assert.equal(core.extractPost(article).url,'https://x.com/current/status/100');
+  assert.equal(core.extractPostContext(article).url,'https://x.com/current/status/100');
+});
+
+test('hidden images and videos cannot contaminate current media while unloaded offscreen images remain usable',()=>{
+  const image=name=>e('img',{src:`https://pbs.twimg.com/media/${name}.jpg`,alt:name});
+  const visible=image('current');visible.complete=false;visible.naturalWidth=0;
+  visible.getBoundingClientRect=()=>({top:20000,bottom:20000,left:0,right:0,width:0,height:0});
+  for(const attrs of [{hidden:''},{'aria-hidden':'true'},{style:'display:none'},{style:'visibility:hidden'}]){
+    const article=e('article',{},[header('current','100'),tweetText('Current media.'),
+      e('div',attrs,[image('stale'),e('video',{}),e('div',{'data-testid':'videoPlayer'})]),visible]);
+    for(const result of [core.extractPost(article),core.extractPostContext(article)]){
+      assert.deepEqual(result.images,[{url:'https://pbs.twimg.com/media/current.jpg',alt:'current'}]);
+      assert.equal(result.hasMedia,true);assert.equal(result.hasVideo,undefined);
+    }
+  }
+});
+
+test('computed hidden media and headers are excluded without hiding visible offscreen source nodes',()=>{
+  const stale=header('stale','99'),hiddenImage=e('img',{src:'https://pbs.twimg.com/media/stale.jpg'});
+  const hiddenVideo=e('video',{}),visible=header('current','100');
+  const article=e('article',{},[stale,visible,tweetText('Current source.'),hiddenImage,hiddenVideo]);
+  const hidden=new Set([stale,hiddenImage,hiddenVideo]);
+  const ownerDocument={defaultView:{getComputedStyle:node=>({display:hidden.has(node)?'none':'block',visibility:'visible'})}};
+  for(const node of [article,...article.querySelectorAll('div, a, span, time, img, video')])node.ownerDocument=ownerDocument;
+  for(const result of [core.extractPost(article),core.extractPostContext(article)]){
+    assert.equal(result.id,'100');assert.deepEqual(result.images,[]);assert.equal(result.hasMedia,false);
+    assert.equal(result.hasVideo,undefined);assert.equal(result.author,'Name of current @current');
+  }
+});
+
+test('hidden quote branches are excluded while visible parent and nested quote media retain ownership',()=>{
+  const image=name=>e('img',{src:`https://pbs.twimg.com/media/${name}.jpg`,alt:name});
+  const nested=e('div',{role:'link'},[header('nested','300'),tweetText('Nested visible.'),image('nested')]);
+  const quote=e('div',{role:'link'},[header('quoted','200'),tweetText('Quoted visible.'),image('quoted'),nested]);
+  const stale=e('div',{hidden:''},[e('div',{role:'link'},[header('stale','99'),tweetText('Hidden quote.'),image('stale')])]);
+  const article=e('article',{},[header('current','100'),tweetText('Current visible.'),image('current'),stale,quote]);
+  for(const result of [core.extractPost(article),core.extractPostContext(article)]){
+    assert.equal(result.quotedContext.length,1);assert.equal(result.quotedContext[0].id,'200');
+    assert.deepEqual(result.images.map(image=>image.alt),['current']);
+    assert.deepEqual(result.quotedContext[0].images.map(image=>image.alt),['quoted']);
+    assert.deepEqual(result.quotedContext[0].quotedContext[0].images.map(image=>image.alt),['nested']);
+  }
+});
+
+test('retained hidden feed nodes produce the same extraction and provider input as a clean detail page',()=>{
+  const makeVisible=()=>[header('current','100'),tweetText('Current visible post.'),
+    e('img',{src:'https://pbs.twimg.com/media/current.jpg',alt:'Current image'}),
+    e('div',{role:'link'},[header('quoted','200'),tweetText('Visible quote.')])];
+  const stale=e('div',{'aria-hidden':'true'},[header('stale','99'),tweetText('Stale retained text.'),
+    e('img',{src:'https://pbs.twimg.com/media/stale.jpg'}),e('video',{}),
+    e('div',{role:'link'},[header('oldquote','98'),tweetText('Stale quote.')])]);
+  const feed=core.extractPost(e('article',{},[stale,...makeVisible()]));
+  const detail=core.extractPost(e('article',{},makeVisible()));
+  assert.deepEqual(feed,detail);
+  const api=require('../extension/api-provider.js'),settings={...core.DEFAULT_SETTINGS,provider:'api',language:'en'};
+  assert.deepEqual(api.buildRequest(feed,settings),api.buildRequest(detail,settings));
+});
