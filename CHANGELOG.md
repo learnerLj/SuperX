@@ -1,5 +1,17 @@
 # Changelog
 
+## Fork fixes — 2026-10-28 (local, installed verification passed)
+
+- Remove the fixed webpack module ID dependency from X built-in Grok authentication. X renamed the observed formatter module from `228952` to `387111` while retaining its auth wire format; SuperX now handles the two explicitly supported formats locally in MAIN-world memory. Unknown or malformed credentials fail closed without opening a socket or exposing credentials.
+- Preserve Fast, ten-request concurrency, cancellation acknowledgements and shared answer caching. This change does not claim compatibility with future private protocol changes.
+- Validation: 1,593 automated checks passed (3 skipped), independent review passed, and the reloaded Chrome extension completed a fresh native Grok reanalysis with five source links. The installed script was verified to use local auth formatting without the old module dependency. Record subsequent user-visible fixes here with their verification scope.
+
+## Fork reading improvements — 2026-10-27
+
+- Reuse same-post in-flight analysis across tabs and wait for pending cache writes before requesting again; preserve started work when scrolling or switching tabs. Analyze replies below a detail post only on explicit request.
+- Preserve native X search, move the toolbar below it and keep output language in Settings. Add a draggable right edge with remembered width and double-click reset.
+- Render mathematical Markdown with bundled KaTeX MathML, and update the then-observed native Grok adapter. These changes were installed and browser-verified before commit `5217f8f`.
+
 ## Local development — 2026-10-26
 
 - Add a separate X built-in Grok connection for published-post fact checks through the native website, with serial same-page connection initialization, up to 10 independent Fast requests and right-column answers/sources, without task tabs or page navigation. No API Key or Build required.

@@ -4,13 +4,13 @@ const source=fs.readFileSync(require.resolve('../extension/native-api-bridge.js'
 const tick=()=>new Promise(r=>setImmediate(r));
 function deferred(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {resolve,reject,promise};}
 function eventTarget(){const events=new Map();return {addEventListener(n,f){if(!events.has(n))events.set(n,new Set());events.get(n).add(f);},removeEventListener(n,f){events.get(n)?.delete(f);},emit(n,event){for(const f of [...(events.get(n)||[])])f(event);},listenerCount:n=>events.get(n)?.size||0};}
-function fixture({auth,uid='invented-user /+',formatThrows=false,adapterMissing=false,adapterThrows=false}={}){
- const sockets=[],posted=[],timers=[],opaque={uid,secret:'invented-auth-not-for-messages'},protocols=['invented-opaque-protocol'];let id=0,authCalls=0,formatCalls=0,owned=true,status='idle',draft='';
+function fixture({auth,uid='invented-user /+',token=' invented-auth-not-for-messages ',protocol,webpackThrows=false}={}){
+ const sockets=[],posted=[],timers=[],opaque={uid,token,protocol,secret:'invented-auth-not-for-messages'},protocols=['grok.bearer','invented-auth-not-for-messages'];let id=0,authCalls=0,webpackCalls=0,owned=true,status='idle',draft='';
  const runtime={getCredentials(){authCalls++;return auth?auth.promise:Promise.resolve(opaque);},getTurnStatus:()=>status};
  let composer={__reactFiber$fixture:{memoizedProps:{runtime},return:null}},input={get innerText(){return draft;},closest:()=>composer};
  class Socket{constructor(url,value){Object.assign(this,eventTarget());this.url=url;this.protocols=value;this.readyState=0;this.sent=[];this.closeCalls=0;sockets.push(this);}send(data){if(this.readyState!==1)throw Error('closed');this.sent.push(data);}close(){this.closeCalls++;this.readyState=2;}open(){this.readyState=1;this.emit('open',{});}closed(){this.readyState=3;this.emit('close',{});}frame(data){this.emit('message',{data:typeof data==='string'?data:JSON.stringify(data)});}}
  const originalSend=Socket.prototype.send;
- const view={...eventTarget(),document:{querySelector:()=>owned?input:null},WebSocket:Socket,SuperXNativeProtocol:Protocol,location:{origin:'https://x.com'},crypto:{randomUUID:()=>`id-${++id}`},URL,TextEncoder,setTimeout(f,ms){const timer={f,ms,cleared:false};timers.push(timer);return timer;},clearTimeout(t){if(t)t.cleared=true;},postMessage(m,origin){assert.equal(origin,'https://x.com');posted.push(m);},webpackChunk_twitter_responsive_web:{push(tuple){tuple[2](module=>{assert.equal(module,228952);if(adapterThrows)throw Error('PRIVATE ADAPTER SOURCE');if(adapterMissing)return {};return {ke(value){formatCalls++;assert.equal(value,opaque);if(formatThrows)throw Error('invented-auth-not-for-messages');return protocols;}};});}}};
+ const view={...eventTarget(),document:{querySelector:()=>owned?input:null},WebSocket:Socket,SuperXNativeProtocol:Protocol,location:{origin:'https://x.com'},crypto:{randomUUID:()=>`id-${++id}`},URL,TextEncoder,setTimeout(f,ms){const timer={f,ms,cleared:false};timers.push(timer);return timer;},clearTimeout(t){if(t)t.cleared=true;},postMessage(m,origin){assert.equal(origin,'https://x.com');posted.push(m);},webpackChunk_twitter_responsive_web:{push(){webpackCalls++;if(webpackThrows)throw Error('PRIVATE ADAPTER SOURCE');throw Error('No module access allowed');}}};
  const context=vm.createContext(view);vm.runInContext(source,context);const window=vm.runInContext('globalThis',context);
  function control(type,nonce='nonce',value={},overrides={}){view.emit('message',{source:window,origin:'https://x.com',data:{channel:CHANNEL,direction:'TO_API',type,nonce,...value},...overrides});}
  const packets=socket=>socket.sent.map(x=>JSON.parse(x));
@@ -20,15 +20,15 @@ function fixture({auth,uid='invented-user /+',formatThrows=false,adapterMissing=
  const chunk=(s,text,session=s.session||'own-session',response=s.response||'own-response')=>s.frame({session_id:session,event:{type:'response.chunk',response_id:response,chunk:{text:{channel:'CHANNEL_ASSISTANT_RESPONSE',text}}}});
  const done=s=>s.frame({session_id:s.session||'own-session',event:{type:'response.done',response:{id:s.response||'own-response',status:'completed'}}});
  function change(kind){if(kind==='throw')runtime.getTurnStatus=()=>{throw Error('invented-auth-not-for-messages');};if(kind==='draft')draft='User draft';if(kind==='generation')status='working';if(kind==='runtime')composer.__reactFiber$fixture.memoizedProps.runtime={getCredentials:runtime.getCredentials,getTurnStatus:runtime.getTurnStatus};if(kind==='composer')composer={__reactFiber$fixture:{memoizedProps:{runtime},return:null}};if(kind==='input')input={innerText:'',closest:()=>composer};if(kind==='inert')owned=false;}
- return {view,Socket,originalSend,sockets,posted,protocols,opaque,control,packets,connect,start,accept,chunk,done,change,authCalls:()=>authCalls,formatCalls:()=>formatCalls,fireOne(ms,index=0){const t=timers.filter(t=>t.ms===ms&&!t.cleared)[index];assert.ok(t);t.cleared=true;t.f();},fire(ms){for(const t of [...timers])if(t.ms===ms&&!t.cleared){t.cleared=true;t.f();}}};
+ return {view,Socket,originalSend,sockets,posted,protocols,opaque,control,packets,connect,start,accept,chunk,done,change,authCalls:()=>authCalls,webpackCalls:()=>webpackCalls,fireOne(ms,index=0){const t=timers.filter(t=>t.ms===ms&&!t.cleared)[index];assert.ok(t);t.cleared=true;t.f();},fire(ms){for(const t of [...timers])if(t.ms===ms&&!t.cleared){t.cleared=true;t.f();}}};
 }
-test('cold connect uses fixed gateway with required uid and opaque native formatter; no global socket hooks or credential messages',async()=>{
+test('cold connect uses fixed gateway with required uid and local auth wire format; no global socket hooks or credential messages',async()=>{
  const h=fixture();assert.equal(h.Socket.prototype.send,h.originalSend);const s=await h.connect();assert.equal(s.readyState,0);assert.equal(h.posted.some(m=>m.kind==='READY'),false);
- const url=new URL(s.url);assert.equal(url.origin,'wss://grok.com');assert.equal(url.pathname,'/ws/mgw/');assert.equal(url.searchParams.get('uid'),'invented-user /+');assert.deepEqual([...url.searchParams.keys()],['uid']);assert.equal(s.protocols,h.protocols);assert.equal(h.authCalls(),1);assert.equal(h.formatCalls(),1);
+ const url=new URL(s.url);assert.equal(url.origin,'wss://grok.com');assert.equal(url.pathname,'/ws/mgw/');assert.equal(url.searchParams.get('uid'),'invented-user /+');assert.deepEqual([...url.searchParams.keys()],['uid']);assert.deepEqual(Array.from(s.protocols),h.protocols);assert.equal(h.authCalls(),1);assert.equal(h.webpackCalls(),0);
  s.open();assert.equal(h.posted.at(-1).kind,'READY');assert.equal(JSON.stringify(h.posted).includes(h.opaque.secret),false);assert.equal(JSON.stringify(h.posted).includes(h.opaque.uid),false);h.control('CANCEL');assert.equal(s.closeCalls,1);s.closed();assert.equal(h.posted.at(-1).kind,'CLOSED');
 });
 test('cancelled asynchronous authentication cannot open a socket or revive an old nonce',async()=>{
- const auth=deferred(),h=fixture({auth});h.control('PREPARE');h.control('CONNECT');assert.equal(h.authCalls(),1);h.control('CANCEL');assert.equal(h.posted.at(-1).kind,'CLOSED');auth.resolve(h.opaque);await tick();assert.equal(h.sockets.length,0);assert.equal(h.formatCalls(),0);
+ const auth=deferred(),h=fixture({auth});h.control('PREPARE');h.control('CONNECT');assert.equal(h.authCalls(),1);h.control('CANCEL');assert.equal(h.posted.at(-1).kind,'CLOSED');auth.resolve(h.opaque);await tick();assert.equal(h.sockets.length,0);assert.equal(h.webpackCalls(),0);
 });
 for(const phase of ['after-auth','open','RUN'])test('draft/runtime/composer/input/generation/inert changes at '+phase+' prevent inference',async()=>{
  for(const kind of ['draft','runtime','composer','input','generation','inert']){
@@ -44,8 +44,8 @@ test('window controls enforce exact source origin channel direction and prepared
  const h=fixture();for(const overrides of [{source:{}},{origin:'https://evil.example'},{data:{channel:'wrong',direction:'TO_API',type:'PREPARE',nonce:'nonce'}},{data:{channel:CHANNEL,direction:'FROM_API',type:'PREPARE',nonce:'nonce'}}])h.control('PREPARE','nonce',{},overrides);
  h.control('CONNECT');await tick();assert.equal(h.sockets.length,0);h.control('PREPARE');h.control('CONNECT','other');await tick();assert.equal(h.sockets.length,0);assert.equal(h.authCalls(),0);
 });
-test('missing uid or opaque formatter error fails without exposing auth or opening a socket',async()=>{
- for(const options of [{uid:''},{formatThrows:true}]){const h=fixture(options);h.control('PREPARE');h.control('CONNECT');await tick();assert.equal(h.sockets.length,0);assert.equal(h.posted.at(-1).code,'X_NATIVE_UNAVAILABLE');assert.equal(JSON.stringify(h.posted).includes(h.opaque.secret),false);}
+test('missing uid fails without exposing auth or opening a socket',async()=>{
+ for(const options of [{uid:''}]){const h=fixture(options);h.control('PREPARE');h.control('CONNECT');await tick();assert.equal(h.sockets.length,0);assert.equal(h.posted.at(-1).code,'X_NATIVE_UNAVAILABLE');assert.equal(JSON.stringify(h.posted).includes(h.opaque.secret),false);}
 });
 test('one RUN creates one session and response, filters protocol IDs, and reports result only after actual socket close',async()=>{
  const h=fixture(),s=await h.start();h.control('CONNECT');h.control('RUN','nonce',{prompt:'Duplicate'});assert.equal(h.sockets.length,1);assert.equal(h.packets(s).filter(p=>p.event.type==='session.create').length,1);
@@ -177,10 +177,18 @@ for(const phase of ['after-auth','open','RUN'])test('global unconfirmed gate is 
 });
 
 
-test('changed or missing observed adapter fails before credentials and never probes other module IDs',async()=>{
- for(const options of [{adapterMissing:true},{adapterThrows:true}]){
-  const h=fixture(options);h.control('PREPARE');h.control('CONNECT');await tick();
-  assert.equal(h.posted.at(-1).code,'X_NATIVE_ADAPTER_CHANGED');assert.equal(h.authCalls(),0);assert.equal(h.formatCalls(),0);assert.equal(h.sockets.length,0);
-  assert.equal(JSON.stringify(h.posted).includes('PRIVATE'),false);
- }
+test('webpack deployment changes do not affect native authentication',async()=>{
+ const h=fixture({webpackThrows:true}),s=await h.connect();
+ assert.equal(h.authCalls(),1);assert.equal(h.webpackCalls(),0);
+ assert.deepEqual(Array.from(s.protocols),['grok.bearer','invented-auth-not-for-messages']);
+});
+for(const protocol of [undefined,'grok.bearer','xai-x-user'])test('explicit local wire format '+protocol,async()=>{
+ const h=fixture({protocol}),s=await h.connect();
+ assert.deepEqual(Array.from(s.protocols),protocol==='xai-x-user'?['xai-x-user.invented-auth-not-for-messages']:['grok.bearer','invented-auth-not-for-messages']);
+ assert.equal(JSON.stringify(h.posted).includes('invented-auth-not-for-messages'),false);
+});
+for(const value of [{token:''},{token:'   '},{token:null},{token:12},{token:'abc def'},{token:'abc,def'},{token:'abc\nsecret'},{token:'é'},{token:'a'.repeat(32769)},{protocol:'new-protocol'}])test('unsupported credential format fails closed '+JSON.stringify(value).slice(0,90),async()=>{
+ const h=fixture(value);h.control('PREPARE');h.control('CONNECT');await tick();
+ assert.equal(h.sockets.length,0);assert.equal(h.posted.at(-1).code,'X_NATIVE_ADAPTER_CHANGED');
+ assert.equal(h.webpackCalls(),0);assert.equal(JSON.stringify(h.posted).includes('invented-auth-not-for-messages'),false);
 });

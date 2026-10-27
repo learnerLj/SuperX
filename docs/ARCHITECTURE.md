@@ -92,3 +92,9 @@ background.js 保存完整成功答案
 `src/content/math-renderer.ts` 是公式解析与安全 MathML 的 owner，构建本地打包 KaTeX 0.19.1 至 `extension/math-renderer.js`，附许可。Markdown renderer 在 Marked 转义之前识别数学 token，再输出原生 MathML；feed、draft、history共用，不加载远端脚本、字体或公式图片。支持行内和独立公式，代码与金额保持文字。带明确 TeX 命令的平衡括号兼容网站丢失反斜杠的公式定界符；无效或尚未闭合的公式保留原文。
 
 KaTeX 使用公开 `renderToString`、MathML-only、`trust:false`、独立macros，单公式4096字符／1500节点／40层／200次展开／20em最大尺寸；一篇最多渲染64个公式，并计入原Markdown DOM总预算。XML解析后仅复制允许的MathML节点和属性，删除annotation，不写innerHTML。JSDOM测试验证结构与隔离；实际字体、换行与溢出用Chrome视觉验收。
+
+### Native authentication wire adapter
+
+`extension/native-api-bridge.js` obtains credentials from the idle owned composer runtime and converts only the observed `grok.bearer` (also the omitted-protocol default) and `xai-x-user` formats into WebSocket subprotocols. It does not import webpack modules or search module exports. Unknown formats fail closed with `X_NATIVE_ADAPTER_CHANGED`; credentials, uid and auth subprotocols remain in MAIN-world memory. The gateway and runtime are private website contracts and can still change independently of bundle module IDs.
+
+User-visible changes must include a dated `CHANGELOG.md` entry with validation scope and any pending installed verification.

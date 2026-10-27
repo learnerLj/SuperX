@@ -5,7 +5,7 @@
   if(!Protocol||!view.WebSocket||view.__superxNativeAPIInstalled)return;
   view.__superxNativeAPIInstalled=true;
   const tasks=new Map();
-  let prepared=null,prepareTimer,authFormat;
+  let prepared=null,prepareTimer;
   const owns=task=>tasks.get(task.nonce)===task;
   const blocked=()=>[...tasks.values()].some(task=>task.blocked);
   const post=(nonce,value)=>view.postMessage({channel:CHANNEL,direction:'FROM_API',nonce,...value},view.location.origin);
@@ -27,17 +27,15 @@
     }catch{return null;}
   }
   function unchanged(task){const now=context();return Boolean(now&&now.composer===task.context.composer&&now.input===task.context.input&&now.runtime===task.context.runtime);}
-  function formatter(){
-    if(authFormat)return authFormat;
-    const chunks=view.webpackChunk_twitter_responsive_web;
-    if(!chunks||typeof chunks.push!=='function')return null;
-    let format;
-    // This observed module is X's own auth-to-WebSocket adapter. Do not inspect
-    // credentials, try alternate modules, or expose values outside MAIN.
-    // Verified against X's GrokXWebRuntime bundle on 2026-10-27. Module IDs
-    // are deployment-specific; fail closed rather than scanning other modules.
-    chunks.push([['superx-native-auth-'+view.crypto.randomUUID()],{},require=>{try{format=require(228952).ke;}catch{format=null;}}]);
-    authFormat=typeof format==='function'?format:null;return authFormat;
+  function authProtocols(credentials){
+    // Wire format verified in X's public runtime on 2026-10-28. Keep this
+    // small protocol adapter local: webpack module IDs change on deployment.
+    // Credentials and the resulting protocols never leave MAIN-world memory.
+    const protocol=credentials?.protocol??'grok.bearer';
+    const token=typeof credentials?.token==='string'?credentials.token.trim():'';
+    if(!['grok.bearer','xai-x-user'].includes(protocol)||!token||
+       token.length>32768||!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(token))return null;
+    return protocol==='xai-x-user'?[`xai-x-user.${token}`]:['grok.bearer',token];
   }
   function clearPrepared(){view.clearTimeout(prepareTimer);prepareTimer=undefined;prepared=null;}
   function dispose(task){
@@ -82,14 +80,12 @@
     if(!task.context){clearPrepared();post(nonce,{kind:'ERROR',code:'X_NATIVE_UNAVAILABLE'});return;}
     tasks.set(nonce,task);
     try{
-      const format=formatter();
-      if(!format){terminate(task,{kind:'ERROR',code:'X_NATIVE_ADAPTER_CHANGED'});return;}
       const credentials=await task.context.runtime.getCredentials();
       if(!owns(task)||task.cancelled||prepared!==nonce)return;
       if(blocked()){terminate(task,{kind:'ERROR',code:'X_NATIVE_CANCEL_UNCONFIRMED'});return;}
       if(!unchanged(task)){terminate(task,{kind:'ERROR',code:'X_NATIVE_PANEL_BUSY'});return;}
-      const protocols=format(credentials);
-      if(!protocols)throw Error();
+      const protocols=authProtocols(credentials);
+      if(!protocols){terminate(task,{kind:'ERROR',code:'X_NATIVE_ADAPTER_CHANGED'});return;}
       const url=new URL('wss://grok.com/ws/mgw/');
       // uid is required by this observed gateway. It remains in the page's
       // connection URL; neither uid nor auth protocols cross the bridge.
