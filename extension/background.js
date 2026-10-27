@@ -945,7 +945,7 @@ async function executeJob(job) {
       if(nativeJobCurrent(job)&&clients.has(client)&&job.revision===revision&&(!jobs.has(job.key)||jobs.get(job.key)===job))jobError(job,safe.error,safe.code,aggregateBilling(job,job.billing));
       return;
     }
-    if(liveJob(job)&&job.settings.provider==='x-native'&&['X_NATIVE_LOGIN_REQUIRED','X_NATIVE_USAGE_LIMIT','X_NATIVE_PAGE_ERROR','X_NATIVE_UNAVAILABLE'].includes(e.code)){
+    if(liveJob(job)&&job.settings.provider==='x-native'&&['X_NATIVE_LOGIN_REQUIRED','X_NATIVE_USAGE_LIMIT','X_NATIVE_PAGE_ERROR','X_NATIVE_UNAVAILABLE','X_NATIVE_ADAPTER_CHANGED'].includes(e.code)){
       nativeFaultCode=e.code;
       for(const waiting of [...jobs.values()].filter(item=>item!==job&&item.settings.provider==='x-native'&&!runningJobs.has(item))){jobError(waiting,SuperXNative.publicError(e).error,e.code);abortJob(waiting);}
       void broadcastConfig();

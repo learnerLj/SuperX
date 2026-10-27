@@ -1,0 +1,18 @@
+---
+title: 修复 X Grok 网页认证适配器更新
+status: complete
+---
+
+用户报告X_NATIVE_UNAVAILABLE并授权排查修复。当前私有网页接口固定模块831216.ke已无导出，发生在取凭据和创建socket之前。CUA Debugger读取当前X加载的公开GrokXWebRuntime.b2a51ec703a89440a.js，原生voice连接resolveConnectTarget调用tn.ke，静态tn=s(228952)。只检查该直接依赖的导出形状，得到ke函数，其公开静态源码接受opaque credentials并按protocol生成WebSocket protocols；未调用真实credentials或导出token/cookie/uid。
+
+修复固定观测module id至228952，保持认证仅在MAIN内存、getCredentials调用、fixedwss端点、10并发、取消确认和Fast协议不变；不加入任意模块扫描或credentials fallback。缺适配器单独X_NATIVE_ADAPTER_CHANGED，发生在取credentials前；backend停止新请求并保留其他已运行任务，不提示用户重复保存设置作为修复。12语种清晰提示更新扩展。
+
+测试：新版固定id真实调用／缺模块及throw不调用credentials不创建socket／无secret消息；native-provider固定错误传递；backend错误准入与兄弟任务保护；完整check与package。用户Reload后实际冷启动核查与公式链路。所有当前未提交数学修复保留，不覆盖用户资产。
+
+2026-10-27 验证：同一实际X帖子页的原生「Explain this post」使用Fast成功生成答案，说明该次原生网页流程中账号和网络可用；扩展仍未Reload本轮修复，不能据此声称修复已安装验收。前台CONFIG同代native故障仅关闭新调用准入，不取消已接收兄弟任务；只有相同provider、配置、身份与安全整数revision才保留。身份／revision变化和未知revision仍取消；新卡使用adapterChanged更新文案。cacheReady可用时原有ANALYZE仍允许读缓存，后端负责阻止新模型调用，不能用前台消息数量代替后端准入证据。
+
+独立定向复查两项反馈已闭合。最终npm run check：1523通过、3跳过、0失败，包含299项content测试；strict TypeScript、生产生成物、62文件发布包校验及73文件JS语法均通过。诊断Debugger已关闭，临时原生测试页已关闭。等待用户Reload后继续实际扩展端验收，不commit/push。
+
+用户Reload后安装实测通过：新开Ryan Williams帖2114835554177261953，实际已加载native-api-bridge含228952.ke、native-protocol含model:fast及非fast拒绝检查。6个自动核查均返回终态可重新分析，无连接错误；主帖1136字符、20个MathML公式，其余5条合计53个公式、22个上标引用。截图实屏确认主帖指数／根式正确排版。页面path保持原帖、scrollY=0，结束无owned panel，未跳转页面。Not fact-checked为原有未独立验证标签，不代表连接失败。未采集WebSocket认证头或frames，实际协议配置与成功终态作为Fast证据边界；浏览器Debugger/Runtime均关闭。截图artifacts/math-rendering-20261027/installed-native-fixed.png。
+
+用户在安装验收后明确要求GitHub commit、push、同步，已授权将本轮公式与native适配修复提交到origin/main。此前不commit/push为当时执行边界，现由该新授权替代。

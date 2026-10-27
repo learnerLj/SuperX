@@ -230,7 +230,7 @@
   }
   let buildErrorCode='',nativeErrorCode='';
   function needsProvider(){
-    if(settings.provider==='x-native')return nativeErrorCode==='X_NATIVE_LOGIN_REQUIRED'?'native.login':'native.failed';
+    if(settings.provider==='x-native')return errorKey(nativeErrorCode||'X_NATIVE_UNAVAILABLE');
     if(settings.provider==='oauth'){
       if(oauthState.connected&&oauthState.modelAvailable===false)return 'oauth.modelUnavailable';
       if(oauthState.state==='restoring'||oauthState.state==='refreshing')return 'oauth.refreshing';
@@ -359,7 +359,7 @@
     entry.ui.box.setAttribute('aria-busy',String(active||entry.status==='retry-wait'));
   }
   function errorKey(code,failure) {
-    if(typeof code==='string'&&code.startsWith('X_NATIVE_'))return code==='X_NATIVE_UNSUPPORTED'?'native.unsupported':code==='X_NATIVE_LOGIN_REQUIRED'?'native.login':code==='X_NATIVE_PANEL_BUSY'?'native.busy':code==='X_NATIVE_CANCEL_UNCONFIRMED'?'native.cleanup':'native.failed';
+    if(typeof code==='string'&&code.startsWith('X_NATIVE_'))return code==='X_NATIVE_ADAPTER_CHANGED'?'native.adapterChanged':code==='X_NATIVE_UNSUPPORTED'?'native.unsupported':code==='X_NATIVE_LOGIN_REQUIRED'?'native.login':code==='X_NATIVE_PANEL_BUSY'?'native.busy':code==='X_NATIVE_CANCEL_UNCONFIRMED'?'native.cleanup':'native.failed';
     if(code==='MODEL_UNSUPPORTED')return 'error.modelUnsupported';
     if(code==='MEDIA_INPUT_LIMIT')return 'error.mediaLimit';
     if(code==='API_IMAGE_INPUT')return 'error.apiImageInput';
@@ -577,6 +577,12 @@
       const previous=identity(settings),dwellChanged=settings.dwellMs!==nextSettings.dwellMs;
       const pausing=settings.enabled&&!nextSettings.enabled;
       const wasReady=providerReady;
+      // A same-generation native fault closes admission; accepted requests
+      // retain their own terminal events. Changed identities/configurations
+      // still cancel through the normal path below.
+      const retainedNativeFault=nextSettings.provider==='x-native'&&settings.provider==='x-native'&&
+        Boolean(message.nativeStatus?.errorCode)&&Number.isSafeInteger(message.taskRevision)&&
+        taskRevision===message.taskRevision&&!allChanged;
       settings=nextSettings;
       credentialIdentity=nextCredentialIdentity;oauthState=message.oauthStatus||{};
       taskRevision=Number.isSafeInteger(message.taskRevision)?message.taskRevision:undefined;
@@ -599,7 +605,7 @@
       // Per-answer failures never freeze other posts, including legacy
       // worker pause flags restored from an older browser session.
       if(!presentationOrPromptsOnlyChanged)queue.clear();
-      if(allChanged || (wasReady&&!providerReady&&!pendingOAuthConnection)) {
+      if(allChanged || (wasReady&&!providerReady&&!pendingOAuthConnection&&!retainedNativeFault)) {
         resetDwellWaits();
         // Security and task-configuration changes cancel every old task.
         // Repeated paused snapshots must not cancel explicit draft checks;

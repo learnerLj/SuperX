@@ -4,13 +4,13 @@ const source=fs.readFileSync(require.resolve('../extension/native-api-bridge.js'
 const tick=()=>new Promise(r=>setImmediate(r));
 function deferred(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {resolve,reject,promise};}
 function eventTarget(){const events=new Map();return {addEventListener(n,f){if(!events.has(n))events.set(n,new Set());events.get(n).add(f);},removeEventListener(n,f){events.get(n)?.delete(f);},emit(n,event){for(const f of [...(events.get(n)||[])])f(event);},listenerCount:n=>events.get(n)?.size||0};}
-function fixture({auth,uid='invented-user /+',formatThrows=false}={}){
+function fixture({auth,uid='invented-user /+',formatThrows=false,adapterMissing=false,adapterThrows=false}={}){
  const sockets=[],posted=[],timers=[],opaque={uid,secret:'invented-auth-not-for-messages'},protocols=['invented-opaque-protocol'];let id=0,authCalls=0,formatCalls=0,owned=true,status='idle',draft='';
  const runtime={getCredentials(){authCalls++;return auth?auth.promise:Promise.resolve(opaque);},getTurnStatus:()=>status};
  let composer={__reactFiber$fixture:{memoizedProps:{runtime},return:null}},input={get innerText(){return draft;},closest:()=>composer};
  class Socket{constructor(url,value){Object.assign(this,eventTarget());this.url=url;this.protocols=value;this.readyState=0;this.sent=[];this.closeCalls=0;sockets.push(this);}send(data){if(this.readyState!==1)throw Error('closed');this.sent.push(data);}close(){this.closeCalls++;this.readyState=2;}open(){this.readyState=1;this.emit('open',{});}closed(){this.readyState=3;this.emit('close',{});}frame(data){this.emit('message',{data:typeof data==='string'?data:JSON.stringify(data)});}}
  const originalSend=Socket.prototype.send;
- const view={...eventTarget(),document:{querySelector:()=>owned?input:null},WebSocket:Socket,SuperXNativeProtocol:Protocol,location:{origin:'https://x.com'},crypto:{randomUUID:()=>`id-${++id}`},URL,TextEncoder,setTimeout(f,ms){const timer={f,ms,cleared:false};timers.push(timer);return timer;},clearTimeout(t){if(t)t.cleared=true;},postMessage(m,origin){assert.equal(origin,'https://x.com');posted.push(m);},webpackChunk_twitter_responsive_web:{push(tuple){tuple[2](module=>{assert.equal(module,831216);return {ke(value){formatCalls++;assert.equal(value,opaque);if(formatThrows)throw Error('invented-auth-not-for-messages');return protocols;}};});}}};
+ const view={...eventTarget(),document:{querySelector:()=>owned?input:null},WebSocket:Socket,SuperXNativeProtocol:Protocol,location:{origin:'https://x.com'},crypto:{randomUUID:()=>`id-${++id}`},URL,TextEncoder,setTimeout(f,ms){const timer={f,ms,cleared:false};timers.push(timer);return timer;},clearTimeout(t){if(t)t.cleared=true;},postMessage(m,origin){assert.equal(origin,'https://x.com');posted.push(m);},webpackChunk_twitter_responsive_web:{push(tuple){tuple[2](module=>{assert.equal(module,228952);if(adapterThrows)throw Error('PRIVATE ADAPTER SOURCE');if(adapterMissing)return {};return {ke(value){formatCalls++;assert.equal(value,opaque);if(formatThrows)throw Error('invented-auth-not-for-messages');return protocols;}};});}}};
  const context=vm.createContext(view);vm.runInContext(source,context);const window=vm.runInContext('globalThis',context);
  function control(type,nonce='nonce',value={},overrides={}){view.emit('message',{source:window,origin:'https://x.com',data:{channel:CHANNEL,direction:'TO_API',type,nonce,...value},...overrides});}
  const packets=socket=>socket.sent.map(x=>JSON.parse(x));
@@ -174,4 +174,13 @@ for(const phase of ['after-auth','open','RUN'])test('global unconfirmed gate is 
  else {const b=h.sockets[1];if(phase==='open')b.open();else h.control('RUN','B',{prompt:'Must not start'});assert.equal(b.sent.length,0);b.closed();}
  assert.equal(h.posted.at(-1).nonce,'B');assert.equal(h.posted.at(-1).code,'X_NATIVE_CANCEL_UNCONFIRMED');assert.notEqual(h.posted.at(-1).retain,true);
  a.closed();const c=await h.start('C');h.control('CANCEL','C');c.closed();
+});
+
+
+test('changed or missing observed adapter fails before credentials and never probes other module IDs',async()=>{
+ for(const options of [{adapterMissing:true},{adapterThrows:true}]){
+  const h=fixture(options);h.control('PREPARE');h.control('CONNECT');await tick();
+  assert.equal(h.posted.at(-1).code,'X_NATIVE_ADAPTER_CHANGED');assert.equal(h.authCalls(),0);assert.equal(h.formatCalls(),0);assert.equal(h.sockets.length,0);
+  assert.equal(JSON.stringify(h.posted).includes('PRIVATE'),false);
+ }
 });

@@ -63,6 +63,7 @@
         "overlay-layout.js",
         "marked.umd.js",
         "marked-cjk-friendly.umd.js",
+        "math-renderer.js",
         "markdown-renderer.js",
         "draft-composer.js",
         "content.js"

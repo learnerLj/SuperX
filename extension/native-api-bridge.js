@@ -34,7 +34,9 @@
     let format;
     // This observed module is X's own auth-to-WebSocket adapter. Do not inspect
     // credentials, try alternate modules, or expose values outside MAIN.
-    chunks.push([['superx-native-auth-'+view.crypto.randomUUID()],{},require=>{format=require(831216).ke;}]);
+    // Verified against X's GrokXWebRuntime bundle on 2026-10-27. Module IDs
+    // are deployment-specific; fail closed rather than scanning other modules.
+    chunks.push([['superx-native-auth-'+view.crypto.randomUUID()],{},require=>{try{format=require(228952).ke;}catch{format=null;}}]);
     authFormat=typeof format==='function'?format:null;return authFormat;
   }
   function clearPrepared(){view.clearTimeout(prepareTimer);prepareTimer=undefined;prepared=null;}
@@ -80,7 +82,8 @@
     if(!task.context){clearPrepared();post(nonce,{kind:'ERROR',code:'X_NATIVE_UNAVAILABLE'});return;}
     tasks.set(nonce,task);
     try{
-      const format=formatter();if(!format)throw Error();
+      const format=formatter();
+      if(!format){terminate(task,{kind:'ERROR',code:'X_NATIVE_ADAPTER_CHANGED'});return;}
       const credentials=await task.context.runtime.getCredentials();
       if(!owns(task)||task.cancelled||prepared!==nonce)return;
       if(blocked()){terminate(task,{kind:'ERROR',code:'X_NATIVE_CANCEL_UNCONFIRMED'});return;}

@@ -93,7 +93,7 @@ test('source disconnect during cancellation confirms the end of the document lif
   const h=harness(),promise=h.run();h.fire(150000);h.port.onDisconnect.emit();await assert.rejects(promise,{code:'TIMEOUT'});assertReleased(h);
 });
 
-for(const code of ['X_NATIVE_LOGIN_REQUIRED','X_NATIVE_USAGE_LIMIT','X_NATIVE_LAYOUT','X_NATIVE_PAGE_ERROR','X_NATIVE_INTERRUPTED','X_NATIVE_PANEL_BUSY','X_NATIVE_UNAVAILABLE','RATE_LIMIT'])test('page '+code+' uses fixed public errors/stages without replay',async()=>{
+for(const code of ['X_NATIVE_LOGIN_REQUIRED','X_NATIVE_USAGE_LIMIT','X_NATIVE_LAYOUT','X_NATIVE_PAGE_ERROR','X_NATIVE_INTERRUPTED','X_NATIVE_PANEL_BUSY','X_NATIVE_UNAVAILABLE','X_NATIVE_ADAPTER_CHANGED','RATE_LIMIT'])test('page '+code+' uses fixed public errors/stages without replay',async()=>{
   const h=harness(),promise=h.run();h.emit('ERROR',{code,error:'PRIVATE WEB PAGE',stage:'send-ready',prompt:'PRIVATE PROMPT'});
   await assert.rejects(promise,e=>{
     const safe=Native.publicError(e);assert.equal(safe.code,code==='RATE_LIMIT'?'X_NATIVE_PAGE_ERROR':code);assert.match(safe.error,/\[send-ready\]$/);assert.equal(safe.error.includes('PRIVATE'),false);assert.equal(e.nativeStage,'send-ready');return true;

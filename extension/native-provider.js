@@ -18,11 +18,12 @@
     X_NATIVE_CITATION_UNAVAILABLE:'Grok 返回的引用无法读取，请手动重试。',
     X_NATIVE_RESPONSE_LIMIT:'Grok 回答超过当前安全长度，已停止本次核查。',
     X_NATIVE_UNAVAILABLE:'当前 X 页面没有可用的 Grok 连接；请检查网页，再在设置中重新保存此连接。',
+    X_NATIVE_ADAPTER_CHANGED:'X 网页的 Grok 接口已变化，当前扩展适配器无法连接；请更新 SuperX。',
     TIMEOUT:'X Grok 网页响应超时，请手动重试。',
     X_NATIVE_BUSY:'X 内置 Grok 已达到 10 路并发上限，请稍后手动重试。',
     CANCELLED:'请求已取消；可手动重试。'
   });
-  const PANEL_ERRORS=new Set(['X_NATIVE_USAGE_LIMIT','X_NATIVE_LOGIN_REQUIRED','X_NATIVE_LAYOUT','X_NATIVE_PAGE_ERROR','X_NATIVE_INTERRUPTED','X_NATIVE_PANEL_BUSY','X_NATIVE_CANCEL_UNCONFIRMED','X_NATIVE_UNAVAILABLE','X_NATIVE_CITATION_UNAVAILABLE','X_NATIVE_RESPONSE_LIMIT']);
+  const PANEL_ERRORS=new Set(['X_NATIVE_USAGE_LIMIT','X_NATIVE_LOGIN_REQUIRED','X_NATIVE_LAYOUT','X_NATIVE_PAGE_ERROR','X_NATIVE_INTERRUPTED','X_NATIVE_PANEL_BUSY','X_NATIVE_CANCEL_UNCONFIRMED','X_NATIVE_UNAVAILABLE','X_NATIVE_ADAPTER_CHANGED','X_NATIVE_CITATION_UNAVAILABLE','X_NATIVE_RESPONSE_LIMIT']);
   const STAGES=new Set(['input-size','editor-ready','insert-command','input-sync','send-ready','panel-entry','panel-open','new-chat','panel-close','cleanup','cancel-ack','unexpected']);
   function publicError(value){const code=Object.hasOwn(MESSAGES,value?.code)?value.code:'X_NATIVE_PAGE_ERROR';return {code,error:MESSAGES[code]+(STAGES.has(value?.nativeStage)?' ['+value.nativeStage+']':'')};}
   function failure(code){return Object.assign(new Error(MESSAGES[code]),{code});}

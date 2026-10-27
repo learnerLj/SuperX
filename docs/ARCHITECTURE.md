@@ -2,7 +2,7 @@
 
 ## 源码与构建
 
-TypeScript 核心源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。三个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
+TypeScript 核心源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。四个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
 
 ```sh
 npm ci
@@ -78,3 +78,9 @@ background.js 保存完整成功答案
 本地测试验证预加载窗口、队列/取消、持久存储、四种适配器、认证隔离、构建一致性和打包；fixture 通过不等于当前 X 网页或真实 provider 已验收。安装后仍需检查 X 时间线与帖子页、首次核查/返回缓存、预加载进入视口不重发、Fast 模式、页面焦点和滚动位置。Chrome 与 Edge 分别验收。
 
 依据：[TypeScript 渐进迁移](https://www.typescriptlang.org/docs/handbook/migrating-from-javascript.html)、[strict](https://www.typescriptlang.org/tsconfig/strict.html)、[Chrome MV3 worker](https://developer.chrome.com/docs/extensions/develop/migrate/to-service-workers)、[消息安全](https://developer.chrome.com/docs/extensions/develop/concepts/messaging#security-considerations)。
+
+## 公式渲染
+
+`src/content/math-renderer.ts` 是公式解析与安全 MathML 的 owner，构建本地打包 KaTeX 0.19.1 至 `extension/math-renderer.js`，附许可。Markdown renderer 在 Marked 转义之前识别数学 token，再输出原生 MathML；feed、draft、history共用，不加载远端脚本、字体或公式图片。支持行内和独立公式，代码与金额保持文字。带明确 TeX 命令的平衡括号兼容网站丢失反斜杠的公式定界符；无效或尚未闭合的公式保留原文。
+
+KaTeX 使用公开 `renderToString`、MathML-only、`trust:false`、独立macros，单公式4096字符／1500节点／40层／200次展开／20em最大尺寸；一篇最多渲染64个公式，并计入原Markdown DOM总预算。XML解析后仅复制允许的MathML节点和属性，删除annotation，不写innerHTML。JSDOM测试验证结构与隔离；实际字体、换行与溢出用Chrome视觉验收。

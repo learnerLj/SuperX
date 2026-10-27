@@ -11,7 +11,7 @@ export const PRODUCTION_FILES = Object.freeze([
   'assets/icon-128.png', 'assets/icon-16.png', 'assets/icon-32.png', 'assets/icon-48.png',
   'assets/superx-logo.svg', 'assets/superx-symbol.svg',
   'background.js', 'build-acp.js', 'build-transport.js', 'build-provider.js', 'build-setup.js', 'content.js', 'draft-composer.js', 'feed-core.js', 'feed-scheduler.js', 'provider-registry.js', 'history-store.js', 'history.css', 'history.html', 'history.js', 'key-store.js', 'LICENSE.txt', 'manifest.json',
-  'markdown-renderer.js', 'marked-cjk-friendly.umd.js', 'marked-cjk-friendly-LICENSE.txt', 'marked-LICENSE.txt', 'marked.umd.js',
+  'math-renderer.js', 'katex-LICENSE.txt', 'markdown-renderer.js', 'marked-cjk-friendly.umd.js', 'marked-cjk-friendly-LICENSE.txt', 'marked-LICENSE.txt', 'marked.umd.js',
   'oauth-provider.js', 'options.css', 'options.html', 'options.js', 'overlay-layout.js',
   'popup.css', 'popup.html', 'popup.js', 'privacy.html', 'setup.css', 'setup.html', 'setup.js', 'ui-i18n.js',
 ].sort());
@@ -91,7 +91,15 @@ function verifyAsset(value, owner) {
 // Refuse recognizable embedded credentials without printing their values. This is
 // an additional guard, not a replacement for reviewing the repository before release.
 function checkPublicText(data, owner) {
-  const text = data.toString('utf8');
+  let text;
+  try { text = new TextDecoder('utf-8', {fatal:true}).decode(data); }
+  catch { throw new Error(`${owner}: invalid UTF-8 source`); }
+  if (/\.(?:js|css)$/.test(owner)) for (const character of text) {
+    const point = character.codePointAt(0);
+    if (point >= 0xFDD0 && point <= 0xFDEF || (point & 0xFFFF) >= 0xFFFE) {
+      throw new Error(`${owner}: Unicode noncharacter rejected by Chrome; escape it in JavaScript source`);
+    }
+  }
   if (/\b(?:xai|sk)-[A-Za-z0-9_-]{24,}\b/.test(text)
     || /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(text)) {
     throw new Error(`${owner}: possible embedded credential; remove it before packaging`);

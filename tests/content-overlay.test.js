@@ -3997,3 +3997,41 @@ test('a confirmed image rejection names the media problem instead of suggesting 
   assert.match(card.testShadow.querySelector('.diagnostics').textContent,/API_IMAGE_INPUT/);
   assert.doesNotMatch(card.testShadow.querySelector('.status').textContent,/模型/);
 });
+
+function nativeFaultConfig(page,{ready=true,revision=7,identity='',code='',cacheReady=true}={}){
+ page.port.onMessage.emit({type:'CONFIG',settings:{...core.DEFAULT_SETTINGS,provider:'x-native',dwellMs:0,prefetchCount:0,prefetchAll:false},ready,answerCacheReady:cacheReady,taskRevision:revision,credentialIdentity:identity,nativeStatus:{errorCode:code}});page.flush();
+}
+for(const phase of ['running','retry-wait','forced'])test(`same-generation native fault preserves ${phase} work and blocks new work`,()=>{
+ const page=fixture({postCount:2});nativeFaultConfig(page);page.intersect();page.tick();
+ let request=analyzeMessages(page)[0];assert.ok(request);
+ if(phase==='forced'){
+  completeFeedRequest(page,request,'First native result');
+  page.cards()[0].testShadow.querySelector('.retry').emit('click');page.flush();
+  request=analyzeMessages(page).at(-1);assert.equal(request.force,true);
+ }
+ page.port.onMessage.emit({type:'START',requestId:request.requestId});
+ if(phase==='retry-wait')retryWait(page,request);
+ const offset=page.port.sent.length;
+ nativeFaultConfig(page,{ready:false,code:'X_NATIVE_ADAPTER_CHANGED'});
+ assert.equal(page.port.sent.slice(offset).some(m=>m.type==='CANCEL_ALL'||m.type==='CANCEL'),false);
+ completeFeedRequest(page,request,'Accepted native answer survives');
+ assert.ok(page.nodes.some(n=>n.textContent.includes('Accepted native answer survives')));
+ const count=analyzeMessages(page).length;
+ page.cards()[0].testShadow.querySelector('.retry').emit('click');page.flush();page.intersect();page.tick();
+ assert.equal(analyzeMessages(page).length,count);
+});
+for(const change of [{revision:8},{identity:'different-account'},{revision:undefined}])test(`native fault still cancels changed or unknown generation ${JSON.stringify(change)}`,()=>{
+ const page=fixture({postCount:1});nativeFaultConfig(page);page.intersect();page.tick();
+ const request=analyzeMessages(page)[0],offset=page.port.sent.length;assert.ok(request);
+ // Explicit undefined must remain undefined rather than the helper default.
+ const revision=Object.hasOwn(change,'revision')?change.revision:7;
+ page.port.onMessage.emit({type:'CONFIG',settings:{...core.DEFAULT_SETTINGS,provider:'x-native',dwellMs:0,prefetchCount:0,prefetchAll:false},ready:false,taskRevision:revision,credentialIdentity:change.identity||'',nativeStatus:{errorCode:'X_NATIVE_ADAPTER_CHANGED'}});page.flush();
+ assert.ok(page.port.sent.slice(offset).some(m=>m.type==='CANCEL_ALL'));
+ completeFeedRequest(page,request,'Stale answer must not appear');
+ assert.ok(!page.nodes.some(n=>n.textContent.includes('Stale answer must not appear')));
+});
+test('native adapter fault on a new card asks for extension update',()=>{
+ const page=fixture({postCount:1});nativeFaultConfig(page,{ready:false,code:'X_NATIVE_ADAPTER_CHANGED',cacheReady:false});page.intersect();page.tick();
+ assert.equal(analyzeMessages(page).length,0);
+ assert.ok(page.cards().some(card=>card.testShadow.querySelector('.status').textContent.startsWith(ui.t('native.adapterChanged','zh-CN'))),JSON.stringify({statuses:page.cards().map(card=>card.testShadow.querySelector('.status').textContent),expected:ui.t('native.adapterChanged','zh-CN')}));
+});

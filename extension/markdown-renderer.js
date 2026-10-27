@@ -1,14 +1,14 @@
 (function(root,factory) {
   'use strict';
-  const api=factory(typeof module==='object'&&module.exports?require('./marked.umd.js'):root.marked,root,typeof module==='object'&&module.exports?require('./marked-cjk-friendly.umd.js'):root.markedCjkFriendly);
+  const api=factory(typeof module==='object'&&module.exports?require('./marked.umd.js'):root.marked,root,typeof module==='object'&&module.exports?require('./marked-cjk-friendly.umd.js'):root.markedCjkFriendly,typeof module==='object'&&module.exports?require('./math-renderer.js'):root.SuperXMath);
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.GrokFirstMarkdown=api;
-})(typeof globalThis!=='undefined'?globalThis:this,function(marked,root,cjkFriendly) {
+})(typeof globalThis!=='undefined'?globalThis:this,function(marked,root,cjkFriendly,math) {
   'use strict';
 
   // Parse Markdown into tokens, then construct a small, explicit set of DOM
-  // elements. Generated HTML, image URLs and model-provided attributes never
-  // reach an HTML parser or cause an additional resource request.
+  // elements. Model HTML and images remain inert. Math uses local KaTeX's
+  // MathML output, copied through a bounded allowlist rather than HTML sinks.
   const LIMITS=Object.freeze({text:30000,depth:32,nodes:12000,tokens:12000});
   const ENTITIES=Object.freeze({amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0',
     ndash:'\u2013',mdash:'\u2014',hellip:'\u2026',copy:'\u00a9',reg:'\u00ae',trade:'\u2122',
@@ -53,6 +53,10 @@
 
   const lexer=marked?.Marked?new marked.Marked({gfm:true,breaks:true}):null;
   if(lexer&&cjkFriendly)lexer.use(cjkFriendly());
+  if(lexer&&math)lexer.use({extensions:[
+    {name:'gfMath',level:'inline',start:math.start,tokenizer:math.tokenizeInline},
+    {name:'gfMathBlock',level:'block',tokenizer:math.tokenizeBlock}
+  ]});
   lexer?.use({extensions:[{
     name:'gfUrl',level:'inline',
     start(src) {const match=/https?:\/\//i.exec(src);return match?match.index:undefined;},
@@ -72,7 +76,7 @@
     try {
       const document=target.ownerDocument||root.document;
       if(!lexer||!document)throw new Error('Markdown renderer unavailable');
-      const state={nodes:0,tokens:0};
+      const state={nodes:0,tokens:0,formulas:0};
       function budget(depth,token=false) {
         if(depth>LIMITS.depth||(token?++state.tokens>LIMITS.tokens:++state.nodes>LIMITS.nodes))throw new Error('Markdown rendering limit');
       }
@@ -82,10 +86,20 @@
         if(!text)return;
         budget(0);parent.append(document.createTextNode(text));
       }
+      function appendMath(parent,token) {
+        const node=!token.pending&&++state.formulas<=64&&math?.render(document,token.text,token.display);
+        if(node){
+          const count=current=>1+Array.from(current.childNodes||[]).reduce((sum,child)=>sum+count(child),0);
+          const size=count(node);
+          if(state.nodes+size<=LIMITS.nodes){state.nodes+=size;parent.append(node);return;}
+        }
+        appendText(parent,token.raw);
+      }
       function inline(parent,tokens,depth=0,inLink=false) {
         for(const token of tokens||[]) {
           budget(depth,true);
           switch(token.type) {
+            case 'gfMath':appendMath(parent,token);break;
             case 'text':
               if(Array.isArray(token.tokens))inline(parent,token.tokens,depth+1,inLink);
               // Marked already decodes numeric references in token.text.
@@ -119,6 +133,7 @@
         for(const token of tokens||[]) {
           budget(depth,true);
           switch(token.type) {
+            case 'gfMathBlock':appendMath(parent,token);break;
             case 'space':appendText(parent,token.raw);break;
             case 'def':break; // Definitions are metadata for reference links.
             case 'paragraph': {

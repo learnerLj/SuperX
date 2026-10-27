@@ -88,6 +88,8 @@ test('production ZIP has manifest at root, exact allowlist, licenses and verifie
   }
   assert.ok(entries.some(entry => entry.name === 'LICENSE.txt'));
   assert.ok(entries.some(entry => entry.name === 'marked-LICENSE.txt'));
+  assert.ok(entries.some(entry => entry.name === 'katex-LICENSE.txt'));
+  assert.ok(entries.some(entry => entry.name === 'math-renderer.js'));
   assert.equal(bytes.includes(Buffer.from('PRIVATE_FIXTURE_DO_NOT_SHIP')), false);
   assert.equal(bytes.includes(Buffer.from('OLD_RELEASE_DO_NOT_SHIP')), false);
   const fileManifestBytes = await readFile(join(result.outputDir, result.filesName));
@@ -259,4 +261,13 @@ test('persistent answer store ships with explicit storage capacity permission',a
  const manifest=JSON.parse(await readFile(join(sourceRoot,'extension','manifest.json'),'utf8'));
  assert.ok(manifest.permissions.includes('unlimitedStorage'));
  const {PRODUCTION_FILES}=await packager;assert.ok(PRODUCTION_FILES.includes('answer-cache.js'));
+});
+
+test('packaging rejects malformed UTF-8 and raw Unicode noncharacters in extension scripts',async t=>{
+ const {inspectPackage}=await packager;
+ for(const [name,bytes,expected] of [
+  ['malformed',Buffer.from([0xc3,0x28]),/invalid UTF-8/],
+  ['noncharacter',Buffer.from('const range="'+String.fromCodePoint(0xffff)+'";'),/Unicode noncharacter/],
+  ['supplementary noncharacter',Buffer.from('const range="'+String.fromCodePoint(0x10ffff)+'";'),/Unicode noncharacter/]
+ ])await t.test(name,async t=>{const root=await fixture(t);await writeFile(join(root,'extension/math-renderer.js'),bytes);await assert.rejects(inspectPackage(root),expected);});
 });

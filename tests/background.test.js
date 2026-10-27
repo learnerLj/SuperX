@@ -3888,7 +3888,7 @@ test('inactive API credential mutation neither cancels native work nor closes it
 });
 
 test('native account or unknown API rejection drains queued jobs but preserves the other nine running tasks',async()=>{
-  for(const code of ['X_NATIVE_LOGIN_REQUIRED','X_NATIVE_USAGE_LIMIT','X_NATIVE_PAGE_ERROR','X_NATIVE_UNAVAILABLE']){
+  for(const code of ['X_NATIVE_LOGIN_REQUIRED','X_NATIVE_USAGE_LIMIT','X_NATIVE_PAGE_ERROR','X_NATIVE_UNAVAILABLE','X_NATIVE_ADAPTER_CHANGED']){
     const slow=Array.from({length:10},()=>deferred());const bg=createBackground({settings:{provider:'x-native'},nativeRun:async(call,h)=>h.nativeCalls.length<=10?slow[h.nativeCalls.length-1].promise:{text:'Recovered native answer',provider:'x-native',verificationStatus:'completed'}});
     await bg.ready();const port=bg.connect();
     for(let i=0;i<10;i++)port.send({type:'ANALYZE',requestId:'account-running-'+i,post:post(2100+i)});

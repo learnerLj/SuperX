@@ -8,6 +8,13 @@ import { spawnSync } from "node:child_process";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const GENERATED_ENTRIES = Object.freeze([
   {
+    source: "src/content/math-renderer.ts",
+    output: "extension/math-renderer.js",
+    globalName: "SuperXMath",
+    minify: true,
+    charset: "ascii",
+  },
+  {
     source: "src/background/answer-cache.ts",
     output: "extension/answer-cache.js",
     globalName: "SuperXAnswerCache",
@@ -55,7 +62,8 @@ export async function buildExtension({
       globalName: entry.globalName,
       platform: "browser",
       target: "chrome120",
-      charset: "utf8",
+      charset: entry.charset || "utf8",
+      minify: entry.minify === true,
       legalComments: "none",
       banner: {
         js: `// GENERATED from ${entry.source}. Edit src/ and run npm run build.`,
