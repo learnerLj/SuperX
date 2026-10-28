@@ -12,6 +12,10 @@ interface CacheRecord {
   provider: string;
   lastAccess: number;
 }
+export interface CachePage {
+  items: { key: string; value: unknown }[];
+  next: string | null;
+}
 function identity(key: string): readonly unknown[] {
   try {
     const value: unknown = JSON.parse(key);
@@ -32,9 +36,11 @@ const request = <T>(req: IDBRequest<T>): Promise<T> =>
 export function create({
   indexedDB,
   name = "SuperXAnswers",
+  keyRange = globalThis.IDBKeyRange,
 }: {
   indexedDB: IDBFactory;
   name?: string;
+  keyRange?: typeof IDBKeyRange;
 }) {
   let opening: Promise<IDBDatabase> | undefined;
   function open() {
@@ -141,6 +147,84 @@ export function create({
     return true;
   }
   return {
+    // Export owns its instance; the worker keeps its existing long-lived handle.
+    async close(): Promise<void> {
+      const pending = opening;
+      opening = undefined;
+      if (pending) (await pending).close();
+    },
+    readPage({
+      after,
+      limit = 128,
+      maxBytes = 1024 * 1024,
+    }: {
+      after?: string;
+      limit?: number;
+      maxBytes?: number;
+    } = {}): Promise<CachePage> {
+      const count = Number.isFinite(limit)
+        ? Math.max(1, Math.min(128, Math.floor(limit)))
+        : 128;
+      const budget = Number.isFinite(maxBytes)
+        ? Math.max(1, Math.min(1024 * 1024, Math.floor(maxBytes)))
+        : 1024 * 1024;
+      return transaction(
+        "readonly",
+        (entries) =>
+          new Promise<CachePage>((resolve, reject) => {
+            if (after !== undefined && !keyRange) {
+              reject(
+                new Error("IDBKeyRange is required for cache pagination."),
+              );
+              return;
+            }
+            const req = entries.openCursor(
+              after === undefined
+                ? undefined
+                : keyRange!.lowerBound(after, true),
+            );
+            const items: CachePage["items"] = [];
+            let bytes = 0;
+            req.onerror = () => reject(req.error);
+            req.onsuccess = () => {
+              const cursor = req.result;
+              if (!cursor) {
+                resolve({ items, next: null });
+                return;
+              }
+              // The owner writes only string primary keys. Never resume from an
+              // inferred value.key: the exclusive primary-key bound ensures progress.
+              if (typeof cursor.primaryKey !== "string") {
+                reject(new Error("Invalid answer cache primary key."));
+                return;
+              }
+              const raw: unknown = cursor.value;
+              const value =
+                raw && typeof raw === "object" && "value" in raw
+                  ? raw.value
+                  : undefined;
+              let size: number;
+              try {
+                size = byteSize(cursor.primaryKey, value);
+              } catch {
+                // A corrupt, non-JSON value is still returned for the exporter to
+                // count; one oversized record must always be able to advance.
+                size = budget + 1;
+              }
+              if (
+                items.length &&
+                (items.length >= count || bytes + size > budget)
+              ) {
+                resolve({ items, next: items[items.length - 1]!.key });
+                return;
+              }
+              items.push({ key: cursor.primaryKey, value });
+              bytes += size;
+              cursor.continue();
+            };
+          }),
+      );
+    },
     ready() {
       return transaction("readonly", async (_, meta) => {
         await state(meta);

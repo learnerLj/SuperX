@@ -1,5 +1,12 @@
 # Changelog
 
+## Export cached fact checks — 2026-10-28
+
+- Add Markdown ZIP and versioned JSONL exports under Settings → Maintenance. Choose a destination, follow progress or cancel; saved files contain cached answers, public post/source links and available metadata. Different analysis variants remain distinct. No cache import or new extension permission.
+- Read the existing IndexedDB in bounded readonly pages and stream directly to the chosen file. Preserve raw answer Markdown and formulas; omit internal cache keys, account/credential identifiers, prompts, connection settings and diagnostic prose. Export does not analyze posts, update LRU or change cached results.
+- Handle empty caches, unreadable records, cancellation and read/write/close failures; support ZIP64 for more than 65,535 analyses. Concurrent changes are read batch by batch, not as a fixed snapshot. No original-post or source-page mirror is included.
+- Validation: 1,623 tests passed, 3 platform-specific skips; strict typing, formatting, 28-entry generation, source reconstruction and release packaging passed. Real Chrome local preview saved and parsed both formats with three synthetic variants; ZIP64 test wrote and reopened 65,536 analyses. Independent review fixes cover clickable Markdown links and the file commit/cancel boundary. Reload the installed extension to enable and validate exports of its actual cache.
+
 ## Shared contract SSOT — 2026-10-28
 
 - Consolidate shared post, usage, generation metadata, failure, model, settings-input and authorization types in `src/shared/contracts.ts`. Provider, worker, history and reading UI derive their views from that owner; keep private wire frames and lifecycle/view state separate.

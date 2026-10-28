@@ -2,7 +2,7 @@
 
 ## 源码与构建
 
-扩展全部自有运行时的 TypeScript 源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。27 个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不提交到 Git，也不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
+扩展全部自有运行时的 TypeScript 源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。28 个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不提交到 Git，也不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
 
 ```sh
 npm ci
@@ -14,11 +14,11 @@ npm run check
 npm run package
 ```
 
-`npm run build` 先核对完整入口覆盖并做严格类型检查。已有四个导出模块保持本地 IIFE 打包；其他 classic scripts 只擦除类型，保留 UMD、顶层词法、脚本顺序和各 world 边界，不加入运行时 import/export。类型导入、导出先由 TypeScript AST 识别并移除模块标记，避免 esbuild 将顶层 `this` 改成 `undefined`。Node 测试通过同一生成入口加载生产逻辑，不维护第二套测试实现。`npm test` 的 pretest 与 `npm run check` 都会检查生成一致性。源码包包含 TypeScript、配置、依赖锁与构建工具；安装包只包含运行所需的本地资源。
+`npm run build` 先核对完整入口覆盖并做严格类型检查。五个导出模块保持本地 IIFE 打包；其他 classic scripts 只擦除类型，保留 UMD、顶层词法、脚本顺序和各 world 边界，不加入运行时 import/export。类型导入、导出先由 TypeScript AST 识别并移除模块标记，避免 esbuild 将顶层 `this` 改成 `undefined`。Node 测试通过同一生成入口加载生产逻辑，不维护第二套测试实现。`npm test` 的 pretest 与 `npm run check` 都会检查生成一致性。源码包包含 TypeScript、配置、依赖锁与构建工具；安装包只包含运行所需的本地资源。
 
 扩展不再有自有手写 JavaScript 运行时。`extension/marked.umd.js` 与 `extension/marked-cjk-friendly.umd.js` 是唯一两个第三方发行文件豁免，不修改第三方源码。HTML、CSS 和静态资源仍在 `extension/`；Node ESM 工具与现有 JS 行为测试属于开发工具，保持其原格式。所有业务修改都编辑 `src/` 后构建，不维护第二份手写实现。全新 Git 克隆没有这些生成 JS；先 `npm ci` 与 `npm run build` 才能加载 `extension/`。npm 的测试、全量检查和打包入口会自动先构建；CI 与 release workflow 也显式构建后再检查。安装 ZIP 和源码分发 ZIP 可含构建好的 JS 供直接加载，这不代表生成物被纳入 Git。
 
-构建从安装目录递归枚举 JS，与 TS owner 双向核对；新增遗漏文件、缺 owner、生成物漂移均失败。`npm run format` / `npm run format:check` 使用锁定版本 Prettier 统一 TS 源码排版，全量检查包含格式验收。源码禁止显式 `any`、关闭类型检查的注释和 `as unknown as` 双重断言。动态 JSON、React fiber、浏览器 DOM 与协议帧使用有界契约；既有运行时校验保留。`@types/chrome` 锁定版本提供扩展 API 类型，`runtime-globals.d.ts` 描述各脚本实际暴露的全局对象，不引入运行时注册层。
+打包启用 esbuild `preserveSymlinks`，避免共享依赖的软链接被真实磁盘路径改写为不同模块标识；源码包重建会逐文件比较 SHA-256。构建从安装目录递归枚举 JS，与 TS owner 双向核对；新增遗漏文件、缺 owner、生成物漂移均失败。`npm run format` / `npm run format:check` 使用锁定版本 Prettier 统一 TS 源码排版，全量检查包含格式验收。源码禁止显式 `any`、关闭类型检查的注释和 `as unknown as` 双重断言。动态 JSON、React fiber、浏览器 DOM 与协议帧使用有界契约；既有运行时校验保留。`@types/chrome` 锁定版本提供扩展 API 类型，`runtime-globals.d.ts` 描述各脚本实际暴露的全局对象，不引入运行时注册层。
 
 ## 公共契约的唯一维护位置
 
@@ -89,6 +89,20 @@ src/background/worker.ts 保存完整成功答案
 缓存身份包括服务、账号（适用时）、原帖 URL、语言和有效核查设置。native 使用公开 X profile 标记，无法识别账号时跳过持久缓存。手动重新分析绕过缓存，成功才替换；失败/取消/不完整输出不覆盖旧成功答案。缓存与 24 小时浏览历史分开。
 
 清空由后台 epoch 和同步建立的清空 barrier 协调：清空前发起的读取返回取消，清空后发起的读取等待清空完成；旧在途任务不能恢复被清掉的缓存。
+
+## 缓存导出
+
+设置 → 维护与排障提供「导出 Markdown ZIP」与「导出 JSONL」。按钮在用户点击时立即打开 File System Access 保存窗口；选择文件后以背压流写入，只有写入流成功关闭才报告完成。处理中可取消，关闭设置页也会取消；不新增扩展权限、不请求 AI、不清除或更新 LRU。使用新版桌面 Chrome/Edge；不提供整库 Blob 回退。
+
+`src/background/answer-cache.ts` 是数据库唯一 owner；`readPage` 使用只读事务与排他主键游标，每批最多 128 条／1 MiB，单条超预算仍推进。`src/export/cache-export.ts` 共用此接口，逐条转换、写入后释放正文；内存保留当前批及 ZIP 中央目录等元数据，不随整个正文总量增长。分批读取不是一致快照：并发新增、替换、清除可能影响随后读取的内容。
+
+JSONL UTF-8 首行是 `{type:"manifest",format:"superx-cache",version:1,exportedAt,consistency:"read-time",description}`；后续每行 `type:"analysis"`，包含 `variantId`（内部 key 的 SHA-256）、`postUrl`、`language`、`provider`、`model`、`reasoningEffort`、`completedAt`、原始 Markdown `text`、HTTP(S) `sources` 及已有用量元数据。时间为 ISO 8601 UTC，未知字段为 null 或省略；坏正文计入跳过数。只解析已知缓存 key 版本，不猜测旧 key 的链接和语言。仅导出明确字段，不带内部 key、账号／credential ID、自定义 prompt、连接设置、诊断文本或任意未知字段。
+
+Markdown ZIP 包含说明 `README.md`、每条 `analysis-<完整 variantId>.md` 和末尾 `export-summary.json`（导出/跳过数、时间、版本和一致性口径）。正文保持原 Markdown，附原帖链接、核查时间、模型、语言和来源；文件名不使用模型输出或帖子文本。zip.js 2.24.0 本地定制核心以 STORE 顺序流写、自动 ZIP64，关闭 worker、压缩/WASM加载路径，无远端资源；许可随包。ZIP64 支持超过 65535 条分析。
+
+这些文件用于阅读、Obsidian 归档与结构化处理，当前没有导入入口。缓存未保存原帖正文、来源网页全文或图片本体，导出不会补抓。导出的答案与来源文字仍属于用户内容，不应当作可信 HTML 或执行代码。
+
+依据：[Chrome 文件系统访问及用户手势](https://developer.chrome.com/docs/capabilities/web-apis/file-system-access)、[zip.js 官方文档](https://gildas-lormeau.github.io/zip.js/api/index.html)。
 
 ## 验证边界
 

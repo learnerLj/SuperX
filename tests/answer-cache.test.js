@@ -1,6 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const {IDBFactory}=require('fake-indexeddb');
+const {IDBKeyRange}=require('fake-indexeddb');
 const Cache=require('../extension/answer-cache.js');
 const value=text=>({text,provider:'api',verificationStatus:'completed'});
 function fixture(){const indexedDB=new IDBFactory(),store=Cache.create({indexedDB});return {indexedDB,store,restart:()=>Cache.create({indexedDB})};}
@@ -44,4 +45,46 @@ test('database open errors reject rather than silently using an in-memory fallba
 
 test('transaction abort rolls back both answer replacement and the byte counter',async()=>{
  const f=fixture();await f.store.put('a',value('original'),10000);await assert.rejects(f.store.put('a',{...value('cannot clone'),bad(){}},10000));assert.equal((await f.store.get('a')).text,'original');await assertBudget(f,10000);await f.store.put('b',value('still usable'),10000);await assertBudget(f,10000);
+});
+
+test('readPage uses bounded exclusive primary-key pages without changing LRU or meta',async()=>{
+ const f=fixture(),reader=Cache.create({indexedDB:f.indexedDB,keyRange:IDBKeyRange});
+ await f.store.migrate(Array.from({length:300},(_,i)=>[String(i).padStart(4,'0'),value('中文 '+i)]),1000000);
+ const before=await records(f),keys=[];let after,pages=0;
+ do{const page=await reader.readPage({after});pages++;assert.ok(page.items.length<=128);keys.push(...page.items.map(r=>r.key));after=page.next??undefined;}while(after!==undefined);
+ assert.equal(pages,3);assert.equal(keys.length,300);assert.equal(new Set(keys).size,300);assert.deepEqual(keys,before.rows.map(r=>r.key));assert.deepEqual(await records(f),before);
+ await reader.close();await f.store.put('worker-still-open',value('yes'),1000000);assert.equal((await f.store.get('worker-still-open')).text,'yes');
+});
+
+test('readPage honors UTF-8 byte and count budgets and advances over one oversized record',async()=>{
+ const f=fixture(),reader=Cache.create({indexedDB:f.indexedDB,keyRange:IDBKeyRange});
+ await f.store.migrate([['a',value('中'.repeat(220000))],['b',value('文'.repeat(220000))],['c',value('x'.repeat(1100000))],['d',value('last')]],10000000);
+ const a=await reader.readPage();assert.deepEqual(a.items.map(r=>r.key),['a']);assert.equal(a.next,'a');
+ const b=await reader.readPage({after:a.next});assert.deepEqual(b.items.map(r=>r.key),['b']);
+ const c=await reader.readPage({after:b.next});assert.deepEqual(c.items.map(r=>r.key),['c']);assert.equal(c.next,'c');
+ const d=await reader.readPage({after:c.next});assert.deepEqual(d.items.map(r=>r.key),['d']);assert.equal(d.next,null);
+ const bounded=await reader.readPage({limit:1000,maxBytes:100000000});assert.deepEqual(bounded.items.map(r=>r.key),['a']);
+ const small=await reader.readPage({limit:1,maxBytes:50});assert.equal(small.items.length,1);assert.equal(small.next,'a');await reader.close();
+});
+
+test('readPage handles empty, deleted cursors, insertions on either side and clear between batches',async()=>{
+ const f=fixture(),reader=Cache.create({indexedDB:f.indexedDB,keyRange:IDBKeyRange});
+ assert.deepEqual(await reader.readPage(),{items:[],next:null});
+ await f.store.migrate(['b','d','f'].map(k=>[k,value(k)]),10000);const first=await reader.readPage({limit:1});
+ await f.store.clear();await f.store.put('a',value('behind'),10000);await f.store.put('c',value('ahead'),10000);await f.store.put('e',value('ahead'),10000);
+ const second=await reader.readPage({after:first.next,limit:1});assert.deepEqual(second.items.map(r=>r.key),['c']);
+ await f.store.clear();assert.deepEqual(await reader.readPage({after:second.next}),{items:[],next:null});await reader.close();
+});
+
+test('readPage reports corrupt values to its consumer and never trusts persisted byte accounting',async()=>{
+ const f=fixture(),reader=Cache.create({indexedDB:f.indexedDB,keyRange:IDBKeyRange});await f.store.ready();
+ const db=await new Promise(resolve=>{const r=f.indexedDB.open('SuperXAnswers');r.onsuccess=()=>resolve(r.result);});
+ const tx=db.transaction('answers','readwrite');tx.objectStore('answers').put({key:'a',bytes:0,value:{text:'x'.repeat(1100000)}});tx.objectStore('answers').put({key:'b',value:null});
+ await new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});db.close();
+ const first=await reader.readPage();assert.equal(first.items.length,1);assert.equal(first.next,'a');assert.deepEqual(await reader.readPage({after:'a'}),{items:[{key:'b',value:null}],next:null});await reader.close();
+});
+
+test('readPage requires an injected key range only for a resumed page in Node; close releases its handle',async()=>{
+ const indexedDB=new IDBFactory(),reader=Cache.create({indexedDB});await reader.ready();await assert.rejects(reader.readPage({after:'a'}),/IDBKeyRange/);await reader.close();await reader.close();
+ await new Promise((resolve,reject)=>{const r=indexedDB.deleteDatabase('SuperXAnswers');r.onsuccess=resolve;r.onerror=()=>reject(r.error);r.onblocked=()=>reject(new Error('export reader leaked its database'));});
 });

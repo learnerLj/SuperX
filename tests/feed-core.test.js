@@ -893,7 +893,7 @@ function uiPageFixture(file, settings=API_UI_SETTINGS, storage={}, environment={
   };
   if(Object.hasOwn(environment,'browserLanguage'))chrome.i18n={getUILanguage:()=>environment.browserLanguage};
   const location={hash:environment.hash||''},pageListeners={};
-  const context=vm.createContext({document,chrome,URL,location,addEventListener(type,listener){pageListeners[type]=listener;},XGrokCore:core,GrokFirstUI:ui,navigator:{language:environment.navigatorLanguage || 'en-US',clipboard:{async writeText(value){if(environment.copyFailure)throw new Error('Clipboard unavailable');environment.onCopy?.(value);}}}});
+  const context=vm.createContext({document,chrome,URL,location,AbortController,indexedDB:environment.indexedDB,showSaveFilePicker:environment.showSaveFilePicker,SuperXCacheExport:environment.cacheExport,addEventListener(type,listener){pageListeners[type]=listener;},XGrokCore:core,GrokFirstUI:ui,navigator:{language:environment.navigatorLanguage || 'en-US',clipboard:{async writeText(value){if(environment.copyFailure)throw new Error('Clipboard unavailable');environment.onCopy?.(value);}}}});
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../extension',`${file}.js`),'utf8'),context);
   return {document,ids,messages,reads,runtimeListeners,storageListeners,local,session,openedOptions,openedHistory,permissionRequests,location,pageListeners};
 }
@@ -2628,4 +2628,51 @@ test('retained hidden feed nodes produce the same extraction and provider input 
   assert.deepEqual(feed,detail);
   const api=require('../extension/api-provider.js'),settings={...core.DEFAULT_SETTINGS,provider:'api',language:'en'};
   assert.deepEqual(api.buildRequest(feed,settings),api.buildRequest(detail,settings));
+});
+
+
+test('cache export buttons choose a destination in the click and finish only after streamed close',async()=>{
+ for(const [button,format,extension] of [['export-markdown','markdown','.zip'],['export-jsonl','jsonl','.jsonl']]){
+  const events=[];let releaseClose;const gate=new Promise(resolve=>releaseClose=resolve);
+  const fixture=uiPageFixture('options',API_UI_SETTINGS,{}, {
+   showSaveFilePicker(options){events.push('picker');assert.ok(options.suggestedName.endsWith(extension));return Promise.resolve({async createWritable(){events.push('open');return {async write(chunk){events.push('write');assert.ok(ArrayBuffer.isView(chunk));},async close(){events.push('close');await gate;},async abort(){events.push('abort');}};}});},
+   cacheExport:{async exportCache(options){events.push(options.format);assert.equal(options.format,format);await options.sink.write(new Uint8Array([1,2]));options.onProgress({exported:3,skipped:1});await options.sink.close();return {exported:3,skipped:1};}}
+  });
+  await settleUI();await settleUI();
+  const pending=fixture.ids.get(button).listeners.click();assert.equal(events[0],'picker');
+  await settleUI();assert.equal(fixture.ids.get('export-jsonl').disabled,true);assert.equal(fixture.ids.get('clear-cache').disabled,true);
+  assert.equal(fixture.ids.get('cache-export-status').textContent,ui.t('export.progress','en',{exported:3,skipped:1}));
+  await fixture.ids.get(button).listeners.click();assert.equal(events.filter(x=>x==='picker').length,1);
+  releaseClose();await pending;
+  assert.equal(fixture.ids.get('cache-export-status').textContent,ui.t('export.complete','en',{exported:3,skipped:1}));
+  assert.equal(fixture.ids.get('export-jsonl').disabled,false);assert.equal(fixture.ids.get('export-cancel').hidden,true);
+  assert.deepEqual(events,['picker','open',format,'write','close']);assert.equal(fixture.messages.some(m=>/ANALYZE|CLEAR_CACHE/.test(m.type)),false);
+ }
+});
+test('cache export handles unsupported browsers and picker cancellation without opening storage',async()=>{
+ const unsupported=uiPageFixture('options');await settleUI();await settleUI();await unsupported.ids.get('export-jsonl').listeners.click();
+ assert.equal(unsupported.ids.get('cache-export-status').textContent,ui.t('export.unsupported','en'));
+ const fixture=uiPageFixture('options',API_UI_SETTINGS,{}, {showSaveFilePicker(){return Promise.reject(Object.assign(new Error('cancelled'),{name:'AbortError'}));}});
+ await settleUI();await settleUI();await fixture.ids.get('export-jsonl').listeners.click();
+ assert.equal(fixture.ids.get('cache-export-status').textContent,ui.t('export.cancelled','en'));assert.equal(fixture.ids.get('export-markdown').disabled,false);
+});
+test('cache export cancellation, page exit and disk failure restore controls and allow retry',async()=>{
+ let calls=0,aborts=0;
+ const fixture=uiPageFixture('options',API_UI_SETTINGS,{}, {
+  showSaveFilePicker:async()=>({createWritable:async()=>({write:async()=>{},close:async()=>{},abort:async()=>{aborts++;}})}),
+  cacheExport:{async exportCache(options){calls++;if(calls<3){await new Promise(resolve=>options.signal.addEventListener('abort',resolve,{once:true}));await options.sink.abort();options.signal.throwIfAborted();}throw new Error('private disk error');}}
+ });
+ await settleUI();await settleUI();
+ let pending=fixture.ids.get('export-markdown').listeners.click();await settleUI();fixture.ids.get('export-cancel').listeners.click();await pending;
+ assert.equal(fixture.ids.get('cache-export-status').textContent,ui.t('export.cancelled','en'));assert.equal(aborts,1);
+ pending=fixture.ids.get('export-jsonl').listeners.click();await settleUI();fixture.pageListeners.pagehide();await pending;assert.equal(aborts,2);
+ await fixture.ids.get('export-jsonl').listeners.click();assert.equal(fixture.ids.get('cache-export-status').textContent,ui.t('export.failed','en'));assert.equal(fixture.ids.get('export-markdown').disabled,false);assert.equal(fixture.ids.get('save').disabled,false);
+});
+test('cache export cancels a writable opened after the user has already cancelled',async()=>{
+ let release,aborts=0,calls=0;const opened=new Promise(resolve=>release=resolve);
+ const fixture=uiPageFixture('options',API_UI_SETTINGS,{}, {
+  showSaveFilePicker:async()=>({createWritable:()=>opened}),cacheExport:{async exportCache(){calls++;}}
+ });
+ await settleUI();await settleUI();const pending=fixture.ids.get('export-jsonl').listeners.click();await settleUI();fixture.ids.get('export-cancel').listeners.click();release({async abort(){aborts++;}});await pending;
+ assert.equal(aborts,1);assert.equal(calls,0);assert.equal(fixture.ids.get('cache-export-status').textContent,ui.t('export.cancelled','en'));
 });

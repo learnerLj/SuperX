@@ -1,4 +1,5 @@
 'use strict';
+const {createHash}=require('node:crypto');
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm');
 const {readFile,mkdtemp,mkdir,writeFile,symlink,rm}=require('node:fs/promises');
 const {tmpdir}=require('node:os'),{resolve,join,dirname}=require('node:path');
@@ -12,14 +13,14 @@ test('exported source includes locked typed dependencies, rebuilds identical ent
  const exported=await inspectSource(root),directory=await mkdtemp(join(tmpdir(),'superx-typed-source-'));t.after(()=>rm(directory,{recursive:true,force:true}));
  for(const entry of exported.entries){const name=entry.name.slice(entry.name.indexOf('/')+1),file=join(directory,name);await mkdir(dirname(file),{recursive:true});await writeFile(file,entry.data);}
  for(const name of ['src/shared/contracts.ts','src/background/provider-registry.ts','src/background/answer-cache.ts','src/content/feed-scheduler.ts','src/content/math-renderer.ts','tsconfig.json','tools/build-extension.mjs','package-lock.json','tests/types/transport-status.type-test.ts'])await readFile(join(directory,name));
- const pkg=JSON.parse(await readFile(join(directory,'package.json'),'utf8')),lock=JSON.parse(await readFile(join(directory,'package-lock.json'),'utf8'));for(const name of ['typescript','esbuild','katex','@types/chrome']){assert.match(pkg.devDependencies[name],/^\d+\.\d+\.\d+$/);assert.equal(lock.packages['node_modules/'+name].version,pkg.devDependencies[name]);assert.equal(lock.packages[''].devDependencies[name],pkg.devDependencies[name]);}
+ const pkg=JSON.parse(await readFile(join(directory,'package.json'),'utf8')),lock=JSON.parse(await readFile(join(directory,'package-lock.json'),'utf8'));for(const name of ['typescript','esbuild','katex','@types/chrome','@zip.js/zip.js']){assert.match(pkg.devDependencies[name],/^\d+\.\d+\.\d+$/);assert.equal(lock.packages['node_modules/'+name].version,pkg.devDependencies[name]);assert.equal(lock.packages[''].devDependencies[name],pkg.devDependencies[name]);}
  // Reuse the same locked local toolchain instead of networking for every fixture.
  await symlink(join(root,'node_modules'),join(directory,'node_modules'),process.platform==='win32'?'junction':'dir');
  // A fresh checkout has source/static assets but none of the generated JS.
  for(const entry of GENERATED_ENTRIES)await rm(join(directory,entry.output));
  await assert.rejects(buildExtension({root:directory,check:true}),/Missing runtime script/);
  await buildExtension({root:directory});await buildExtension({root:directory,check:true});
- for(const entry of GENERATED_ENTRIES)assert.deepEqual(await readFile(join(directory,entry.output)),await readFile(join(root,entry.output)));
+ for(const entry of GENERATED_ENTRIES){const digest=bytes=>createHash('sha256').update(bytes).digest('hex');assert.equal(digest(await readFile(join(directory,entry.output))),digest(await readFile(join(root,entry.output))),entry.output+' must rebuild byte-identically');}
  const target=join(directory,'extension/feed-scheduler.js'),before=await readFile(target),file=join(directory,'src/content/feed-scheduler.ts');await writeFile(file,(await readFile(file,'utf8')).replace('Math.trunc(options.count)','Math.trunc(options.count)-1'));
  await assert.rejects(buildExtension({root:directory,check:true}),/Generated output drift: extension\/feed-scheduler.js/);assert.deepEqual(await readFile(target),before,'--check must not silently regenerate');
  await buildExtension({root:directory});assert.notDeepEqual(await readFile(target),before);await buildExtension({root:directory,check:true});

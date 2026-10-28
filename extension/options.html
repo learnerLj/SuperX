@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="options.css">
     <script src="feed-core.js" defer></script>
     <script src="ui-i18n.js" defer></script>
+    <script src="cache-export.js" defer></script>
     <script src="options.js" defer></script>
   </head>
   <body>
@@ -282,6 +283,16 @@
           <label for="answer-cache-limit" data-i18n="options.cacheLimit">Answer cache limit (MB)</label>
           <input id="answer-cache-limit" type="number" min="1" max="1048576" step="1" value="1024" required aria-describedby="answer-cache-limit-help">
           <p id="answer-cache-limit-help" class="help" data-i18n="options.cacheLimitHelp">Default: 1024 MB (1 GB). Answers do not expire. Least recently used answers are removed when the limit is reached. Save to apply.</p>
+        </div>
+        <div class="cache-export-section" aria-labelledby="cache-export-heading">
+          <h3 id="cache-export-heading" data-i18n="export.heading">Export cached fact checks</h3>
+          <p class="section-description" data-i18n="export.help">Markdown ZIP for reading; JSONL for structured archives. Exports saved answers and source links, without changing the cache. Keep this page open until it finishes.</p>
+          <div class="diagnostics-actions">
+            <button id="export-markdown" class="secondary-button" type="button" data-i18n="export.markdown">Export Markdown ZIP</button>
+            <button id="export-jsonl" class="secondary-button" type="button" data-i18n="export.jsonl">Export JSONL</button>
+            <button id="export-cancel" class="text-button" type="button" data-i18n="export.cancel" hidden>Cancel</button>
+          </div>
+          <p id="cache-export-status" class="help" role="status" aria-live="polite"></p>
         </div>
         <div class="maintenance-action compact-section" aria-labelledby="cache-heading">
           <div>

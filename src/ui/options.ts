@@ -1,3 +1,4 @@
+import type { ExportFormat } from "../export/cache-export";
 import type { Settings } from "../shared/contracts";
 import type {
   ControlMessage,
@@ -132,6 +133,10 @@ interface PageElements {
   "answer-cache-limit-help": HTMLElementTagNameMap["p"];
   "cache-heading": HTMLElementTagNameMap["h3"];
   "clear-cache": HTMLElementTagNameMap["button"];
+  "export-markdown": HTMLButtonElement;
+  "export-jsonl": HTMLButtonElement;
+  "export-cancel": HTMLButtonElement;
+  "cache-export-status": HTMLParagraphElement;
   "reload-heading": HTMLElementTagNameMap["h3"];
   "extension-version": HTMLElementTagNameMap["p"];
   "reload-extension": HTMLElementTagNameMap["button"];
@@ -182,6 +187,92 @@ interface PageElements {
   let security = { keyState: "missing", remember: true, hasSavedKey: false };
   let securityLoaded = false;
   let busy = false;
+  let exportController: AbortController | null = null;
+  let exportStatus = { key: "", vars: {} as Record<string, unknown> };
+  function renderExport() {
+    $("export-markdown").disabled = busy || exportController !== null;
+    $("export-jsonl").disabled = busy || exportController !== null;
+    $("export-cancel").hidden = exportController === null;
+    $("export-cancel").disabled = exportController?.signal.aborted ?? true;
+    $("cache-export-status").textContent = exportStatus.key
+      ? ui.t(exportStatus.key, uiLanguage, exportStatus.vars)
+      : "";
+  }
+  async function startExport(format: ExportFormat) {
+    if (busy || exportController) return;
+    type Picker = (options: {
+      suggestedName: string;
+      types: { description: string; accept: Record<string, string[]> }[];
+    }) => Promise<FileSystemFileHandle>;
+    const picker = (
+      globalThis as typeof globalThis & { showSaveFilePicker?: Picker }
+    ).showSaveFilePicker;
+    if (!picker) {
+      exportStatus = { key: "export.unsupported", vars: {} };
+      renderExport();
+      return;
+    }
+    const controller = new AbortController();
+    exportController = controller;
+    exportStatus = { key: "export.selecting", vars: {} };
+    setBusy(true);
+    let writable: FileSystemWritableFileStream | undefined;
+    let handedOff = false;
+    try {
+      // Invoke the picker in this click's user activation, before any I/O or await.
+      const handle = await picker.call(globalThis, {
+        suggestedName: `SuperX-cache-${new Date().toISOString().slice(0, 10)}.${format === "markdown" ? "zip" : "jsonl"}`,
+        types: [
+          {
+            description: format === "markdown" ? "Markdown ZIP" : "JSONL",
+            accept:
+              format === "markdown"
+                ? { "application/zip": [".zip"] }
+                : { "application/x-ndjson": [".jsonl"] },
+          },
+        ],
+      });
+      controller.signal.throwIfAborted();
+      writable = await handle.createWritable();
+      controller.signal.throwIfAborted();
+      const output = writable;
+      handedOff = true;
+      const result = await SuperXCacheExport.exportCache({
+        indexedDB,
+        format,
+        signal: controller.signal,
+        sink: {
+          async write(chunk) {
+            await output.write(new Uint8Array(chunk));
+          },
+          async close() {
+            await output.close();
+          },
+          async abort(reason) {
+            await output.abort(reason);
+          },
+        },
+        onProgress(progress) {
+          exportStatus = { key: "export.progress", vars: { ...progress } };
+          renderExport();
+        },
+      });
+      exportStatus = { key: "export.complete", vars: { ...result } };
+    } catch (error) {
+      // Also covers cancellation while createWritable was still pending.
+      if (writable && !handedOff) await writable.abort(error).catch(() => {});
+      const cancelled =
+        controller.signal.aborted ||
+        (error as { name?: unknown } | null)?.name === "AbortError";
+      exportStatus = {
+        key: cancelled ? "export.cancelled" : "export.failed",
+        vars: {},
+      };
+    } finally {
+      exportController = null;
+      setBusy(false);
+    }
+  }
   let optionsFocusPending = false;
   let lastOptionsFocusNonce: string | number | undefined;
   let diagnosticsBusy = false,
@@ -1014,6 +1105,7 @@ interface PageElements {
     renderSecurity();
     renderProvider();
     renderDiagnostics();
+    renderExport();
     if (!value && optionsFocusPending) void consumeOptionsFocus();
   }
   function keyInputClear() {
@@ -1329,6 +1421,7 @@ interface PageElements {
     const interfaceLanguage =
       $("interface-language").value || currentSettings.interfaceLanguage;
     uiLanguage = ui.resolveLanguage(interfaceLanguage, observedUILanguage);
+    renderExport();
     ui.apply(document, uiLanguage);
     // Keep a real, fixed-destination link inside localized plain text. Locale
     // refreshes must neither parse HTML nor reset the user's details toggle.
@@ -2133,6 +2226,13 @@ interface PageElements {
       setBusy(false);
     }
   });
+  $("export-markdown").addEventListener("click", () => startExport("markdown"));
+  $("export-jsonl").addEventListener("click", () => startExport("jsonl"));
+  $("export-cancel").addEventListener("click", () => {
+    exportController?.abort();
+    renderExport();
+  });
+  addEventListener("pagehide", () => exportController?.abort());
   $("clear-cache").addEventListener("click", async () => {
     if (busy) return;
     setBusy(true);

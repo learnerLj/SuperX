@@ -48,6 +48,11 @@ export const GENERATED_ENTRIES = Object.freeze([
     charset: "ascii",
   },
   {
+    source: "src/export/cache-export.ts",
+    output: "extension/cache-export.js",
+    globalName: "SuperXCacheExport",
+  },
+  {
     source: "src/background/answer-cache.ts",
     output: "extension/answer-cache.js",
     globalName: "SuperXAnswerCache",
@@ -230,6 +235,8 @@ export async function buildExtension({
           entryPoints: [entry.source],
           outfile: entry.output,
           bundle: true,
+          // Keep dependency module IDs stable when a source checkout shares node_modules.
+          preserveSymlinks: true,
           write: false,
           format: "iife",
           globalName: entry.globalName,

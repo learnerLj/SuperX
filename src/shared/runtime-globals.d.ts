@@ -19,6 +19,7 @@ declare global {
   var SuperXKeyStore: import("../background/key-store").API;
   var SuperXBuildConnectionStore: import("../background/key-store").BuildAPI;
   var SuperXHistoryStore: import("../background/history-store").API;
+  var SuperXCacheExport: typeof import("../export/cache-export");
   var SuperXAnswerCache: typeof import("../background/answer-cache");
   var SuperXProviders: typeof import("../background/provider-registry");
   var SuperXFeedScheduler: typeof import("../content/feed-scheduler");
