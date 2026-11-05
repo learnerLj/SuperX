@@ -1104,11 +1104,15 @@ import type {
           ? "native.unsupported"
           : code === "X_NATIVE_LOGIN_REQUIRED"
             ? "native.login"
-            : code === "X_NATIVE_PANEL_BUSY"
-              ? "native.busy"
-              : code === "X_NATIVE_CANCEL_UNCONFIRMED"
-                ? "native.cleanup"
-                : "native.failed";
+            : code === "X_NATIVE_USAGE_LIMIT"
+              ? "native.usage"
+              : code === "X_NATIVE_STREAM_ERROR"
+                ? "native.stream"
+                : code === "X_NATIVE_PANEL_BUSY"
+                  ? "native.busy"
+                  : code === "X_NATIVE_CANCEL_UNCONFIRMED"
+                    ? "native.cleanup"
+                    : "native.failed";
     if (code === "MODEL_UNSUPPORTED") return "error.modelUnsupported";
     if (code === "MEDIA_INPUT_LIMIT") return "error.mediaLimit";
     if (code === "API_IMAGE_INPUT") return "error.apiImageInput";

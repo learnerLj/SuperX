@@ -28,7 +28,7 @@ import type {
   AnalysisResult,
   CachePartition,
 } from "./worker-types";
-import type { BuildConnection } from "../shared/contracts";
+import type { BuildConnection, PublicError } from "../shared/contracts";
 import type {
   Response as HistoryResponse,
   Status as HistoryStatus,
@@ -3296,6 +3296,7 @@ async function executeJob(job: Job) {
       [
         "X_NATIVE_LOGIN_REQUIRED",
         "X_NATIVE_USAGE_LIMIT",
+        "X_NATIVE_STREAM_ERROR",
         "X_NATIVE_PAGE_ERROR",
         "X_NATIVE_UNAVAILABLE",
         "X_NATIVE_ADAPTER_CHANGED",
@@ -3373,7 +3374,7 @@ async function executeJob(job: Job) {
         : undefined;
       if (partialResult && !commentsJob(job))
         job.retainedFactCheck = sanitizeAnalysis(partialResult);
-      const safeError =
+      const safeError: PublicError =
         e.code === "MODEL_UNSUPPORTED"
           ? GrokFirstAPI.publicError(e)
           : providers[job.settings.provider].publicError(e);
@@ -3413,6 +3414,9 @@ async function executeJob(job: Job) {
       const failureMetadata = {
         ...errorBilling,
         ...diagnosticMetadata,
+        ...(job.settings.provider === "x-native" && safeError.nativeDetail
+          ? { diagnostics: { native: safeError.nativeDetail } }
+          : {}),
         ...(commentsJob(job)
           ? budgetFailure || capacityFailure
             ? { verificationFailure: budgetFailure || capacityFailure }
