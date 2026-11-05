@@ -186,9 +186,15 @@ export interface Update extends ResultMetadata {
   phase?: string;
   verificationStatus?: AnalysisResult["verificationStatus"];
 }
+export interface NativeFailureDetail {
+  status?: string;
+  reason?: string;
+  errorCode?: string;
+}
 export interface PublicError {
   error: string;
   code: string;
+  nativeDetail?: NativeFailureDetail;
 }
 export interface Capabilities {
   analysis: boolean;

@@ -76,7 +76,11 @@ interface PageElements {
       if (currentSettings.provider === "x-native")
         return config.nativeStatus?.errorCode === "X_NATIVE_LOGIN_REQUIRED"
           ? "native.login"
-          : "native.failed";
+          : config.nativeStatus?.errorCode === "X_NATIVE_USAGE_LIMIT"
+            ? "native.usage"
+            : config.nativeStatus?.errorCode === "X_NATIVE_STREAM_ERROR"
+              ? "native.stream"
+              : "native.failed";
       if (currentSettings.provider === "oauth") {
         const state = config.oauthStatus || {};
         if (

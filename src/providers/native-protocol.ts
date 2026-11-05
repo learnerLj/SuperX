@@ -1,10 +1,16 @@
 import type { Source, ProviderRoot } from "./types";
+export interface FailureDetail {
+  status?: string;
+  reason?: string;
+  errorCode?: string;
+}
 export interface Event {
   kind: string;
   text?: string;
   sources?: Source[];
   code?: string;
   retain?: boolean;
+  detail?: FailureDetail;
 }
 export interface Options {
   nonce: string;
@@ -50,6 +56,37 @@ interface Wire {
   };
   const id = (value: unknown): value is string =>
     typeof value === "string" && value.trim().length > 0 && value.length <= 200;
+  // X reports an exhausted web allowance through several shapes: an error
+  // frame, a failed response, or an incomplete response with a reason. Only
+  // these short identifiers are retained; message prose never reaches storage.
+  const LIMIT_SIGNAL =
+    /usage|quota|rate.?limit|limit.?reached|too many|exceeded.{0,24}(?:limit|allowance)|(?:使用|用量|调用).{0,8}(?:上限|限制)/i;
+  const SAFE_DETAIL = /^[A-Za-z0-9_.:-]{1,80}$/;
+  function limitSignal(value: unknown): boolean {
+    if (!plain(value)) return false;
+    return [value.code, value.type, value.reason, value.message].some(
+      (part) =>
+        typeof part === "string" && LIMIT_SIGNAL.test(part.slice(0, 300)),
+    );
+  }
+  function failureDetail(
+    status: string,
+    value: unknown,
+  ): FailureDetail | undefined {
+    const out: FailureDetail = { status };
+    if (plain(value)) {
+      const code =
+        typeof value.code === "string"
+          ? value.code
+          : typeof value.type === "string"
+            ? value.type
+            : "";
+      const reason = typeof value.reason === "string" ? value.reason : "";
+      if (SAFE_DETAIL.test(code)) out.errorCode = code;
+      if (SAFE_DETAIL.test(reason)) out.reason = reason;
+    }
+    return out.errorCode || out.reason ? out : undefined;
+  }
   function create({ nonce, prompt, send, emit, randomUUID }: Options) {
     // nonce belongs to the outer bridge. Protocol ownership is established by
     // the matching create/request IDs, session and response, not by a nonce.
@@ -69,14 +106,14 @@ interface Wire {
     const sources: Source[] = [],
       sourceNumbers = new Map<string, number>();
     const snapshot = () => sources.map((source) => ({ ...source }));
-    function finish(kind: string, code?: string) {
+    function finish(kind: string, code?: string, detail?: FailureDetail) {
       if (terminal) return;
       terminal = true;
       emit(
         kind === "RESULT"
           ? { kind, text, sources: snapshot() }
           : code
-            ? { kind, code }
+            ? { kind, code, ...(detail ? { detail } : {}) }
             : { kind },
       );
     }
@@ -178,14 +215,25 @@ interface Wire {
     function serverError(event: Wire) {
       if (!plain(event.error)) return;
       const reference = event.error.event_id;
+      const detail = failureDetail("error", event.error);
+      // A rejection of our own cancel must keep the retained gate even when it
+      // carries limit wording; releasing ownership here could free the panel
+      // while X is still generating.
       if (cancelId && reference === cancelId && responseId) {
         unconfirmed();
-      } else if (
+        return;
+      }
+      if (limitSignal(event.error)) {
+        if (userCancelled && !internalError) finish("CLOSED");
+        else finish("ERROR", internalError || "X_NATIVE_USAGE_LIMIT", detail);
+        return;
+      }
+      if (
         !responseId &&
         (reference === createId || (requestId && reference === requestId))
       ) {
         if (userCancelled && !internalError) finish("CLOSED");
-        else finish("ERROR", internalError || "X_NATIVE_PAGE_ERROR");
+        else finish("ERROR", internalError || "X_NATIVE_PAGE_ERROR", detail);
       }
     }
     function chunk(value: unknown) {
@@ -333,20 +381,43 @@ interface Wire {
           )
         )
           return;
+        const response = event.response;
+        // X does not name the exhausted allowance in the terminal frame it
+        // sends to the page: the observed shape is status "incomplete" with
+        // status_details.reason "stream_error" and no error object. Keep any
+        // limit wording that does arrive, and give the silent stream failure
+        // its own code instead of calling every stop an interruption.
+        const statusDetails = plain(response.status_details)
+          ? response.status_details
+          : undefined;
+        const cause = plain(response.error)
+          ? response.error
+          : plain(response.incomplete_details)
+            ? response.incomplete_details
+            : statusDetails;
+        const detail = failureDetail(String(response.status), cause);
+        const limited =
+          limitSignal(response.error) ||
+          limitSignal(response.incomplete_details) ||
+          limitSignal(statusDetails);
         if (internalError) finish("ERROR", internalError);
         else if (userCancelled) finish("CLOSED");
-        else if (event.response.status === "completed")
+        else if (response.status === "completed")
           finish(
             text.trim() ? "RESULT" : "ERROR",
             text.trim() ? undefined : "X_NATIVE_PAGE_ERROR",
+            text.trim() ? undefined : detail,
           );
-        else
+        else if (limited) finish("ERROR", "X_NATIVE_USAGE_LIMIT", detail);
+        else if (response.status === "incomplete")
           finish(
             "ERROR",
-            event.response.status === "incomplete"
-              ? "X_NATIVE_INTERRUPTED"
-              : "X_NATIVE_PAGE_ERROR",
+            statusDetails?.reason === "stream_error"
+              ? "X_NATIVE_STREAM_ERROR"
+              : "X_NATIVE_INTERRUPTED",
+            detail,
           );
+        else finish("ERROR", "X_NATIVE_PAGE_ERROR", detail);
       }
       // output_text.done/output_item.done are empty in the observed protocol;
       // neither those events nor tool_result/ui_layout supply assistant text.

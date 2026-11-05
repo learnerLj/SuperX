@@ -12,9 +12,15 @@ interface FocusSnapshot {
   start?: number | null;
   end?: number | null;
 }
+interface FailureDetail {
+  status?: string;
+  reason?: string;
+  errorCode?: string;
+}
 interface Failure {
   code?: string;
   stage?: string;
+  detail?: FailureDetail;
 }
 interface Result {
   text?: string;
@@ -28,6 +34,7 @@ interface APIMessage extends Result {
   code?: string;
   stage?: string;
   retain?: boolean;
+  detail?: FailureDetail;
 }
 interface Task {
   nonce: string;
@@ -141,7 +148,11 @@ export interface API {
         },
         view.location.origin,
       );
-    const error = (code: string, stage?: string): Failure => ({ code, stage });
+    const error = (
+      code: string,
+      stage?: string,
+      detail?: FailureDetail,
+    ): Failure => ({ code, stage, ...(detail ? { detail } : {}) });
     const isOpen = (task: Task) =>
       Boolean(task.root?.isConnected && panel(doc) === task.root);
     function nativeNode(task: Task, node: Node | null) {
@@ -350,6 +361,7 @@ export interface API {
         emit(task, "ERROR", {
           code: failure.code || "X_NATIVE_LAYOUT",
           stage: failure.stage,
+          ...(failure.detail ? { detail: failure.detail } : {}),
         });
         // A non-retained rejection owns no remaining API work. Acknowledge
         // cleanup so the provider does not retain a phantom blocked task.
@@ -536,7 +548,7 @@ export interface API {
           void finish(task, { text: m.text, sources: m.sources });
         else if (m.kind === "CLOSED") void finish(task, null, null, true);
         else if (m.kind === "ERROR")
-          void finish(task, null, error(m.code!, m.stage));
+          void finish(task, null, error(m.code!, m.stage, m.detail));
       };
       task.onIntent = (event) => {
         if (

@@ -121,7 +121,7 @@ test('disconnect during pending response cancellation closes without requiring a
 });
 
 for(const phase of ['create','request'])test('only associated '+phase+' rejection may end an ungenerated request without raw server messages',()=>{
-  const h=harness();h.api.start();if(phase==='request'){h.session();h.attach();}h.error('not-our-id');assert.deepEqual(h.events,[]);h.error(phase==='create'?h.createId():h.requestId());assertTerminal(h,{kind:'ERROR',code:'X_NATIVE_PAGE_ERROR'});assert.equal(JSON.stringify(h.events).includes('SECRET'),false);
+  const h=harness();h.api.start();if(phase==='request'){h.session();h.attach();}h.error('not-our-id');assert.deepEqual(h.events,[]);h.error(phase==='create'?h.createId():h.requestId());assertTerminal(h,{kind:'ERROR',code:'X_NATIVE_PAGE_ERROR',detail:{status:'error',errorCode:'unknown_session'}});assert.equal(JSON.stringify(h.events).includes('SECRET'),false);
 });
 
 test('pending cancellation plus a request rejection is CLOSED; late request errors cannot terminate a bound response',()=>{
@@ -223,4 +223,51 @@ test('cancel rejection after an internal citation error retains state until term
 
 test('a raw-short Unicode URL that expands beyond the source URL budget also cancels',()=>{
   const h=harness();h.ready();h.citation('https://example.com/'+'中'.repeat(300));assert.equal(h.sent.at(-1).event.type,'response.cancel');h.done('incomplete');assertTerminal(h,{kind:'ERROR',code:'X_NATIVE_CITATION_UNAVAILABLE'});
+});
+
+test('usage-limit error frames map to X_NATIVE_USAGE_LIMIT with short sanitized detail',()=>{
+  const h=harness();h.api.start();
+  h.receive('error',{error:{type:'usage_limit_error',code:'usage_limit_exceeded',message:'PRIVATE SERVER PROSE',event_id:h.createId()}});
+  assertTerminal(h,{kind:'ERROR',code:'X_NATIVE_USAGE_LIMIT',detail:{status:'error',errorCode:'usage_limit_exceeded'}});
+  assert.equal(JSON.stringify(h.events).includes('PRIVATE'),false);
+});
+
+test('incomplete responses carrying a usage reason map to X_NATIVE_USAGE_LIMIT',()=>{
+  const h=harness();h.ready();
+  h.receive('response.done',{response:{id:'response-own',status:'incomplete',incomplete_details:{reason:'usage_limit'}}});
+  assertTerminal(h,{kind:'ERROR',code:'X_NATIVE_USAGE_LIMIT',detail:{status:'incomplete',reason:'usage_limit'}});
+});
+
+test('failed responses carrying a usage error map to X_NATIVE_USAGE_LIMIT',()=>{
+  const h=harness();h.ready();
+  h.receive('response.done',{response:{id:'response-own',status:'failed',error:{code:'usage_limit_exceeded',message:'PRIVATE'}}});
+  assertTerminal(h,{kind:'ERROR',code:'X_NATIVE_USAGE_LIMIT',detail:{status:'failed',errorCode:'usage_limit_exceeded'}});
+  assert.equal(JSON.stringify(h.events).includes('PRIVATE'),false);
+});
+
+test('incomplete and failed responses without a limit signal keep their existing codes',()=>{
+  for(const [status,code] of [['incomplete','X_NATIVE_INTERRUPTED'],['failed','X_NATIVE_PAGE_ERROR']]){
+    const h=harness();h.ready();
+    h.receive('response.done',{response:{id:'response-own',status}});
+    assertTerminal(h,{kind:'ERROR',code});
+  }
+});
+
+test('a server-side stream stop becomes X_NATIVE_STREAM_ERROR, not an interruption',()=>{
+  const h=harness();h.ready();
+  h.receive('response.done',{response:{id:'response-own',status:'incomplete',status_details:{reason:'stream_error'},output_modalities:['text']}});
+  assertTerminal(h,{kind:'ERROR',code:'X_NATIVE_STREAM_ERROR',detail:{status:'incomplete',reason:'stream_error'}});
+});
+
+test('limit wording inside status_details still maps to X_NATIVE_USAGE_LIMIT',()=>{
+  const h=harness();h.ready();
+  h.receive('response.done',{response:{id:'response-own',status:'incomplete',status_details:{reason:'usage_limit_reached'}}});
+  assertTerminal(h,{kind:'ERROR',code:'X_NATIVE_USAGE_LIMIT',detail:{status:'incomplete',reason:'usage_limit_reached'}});
+});
+
+test('a limit-worded rejection of our own cancel keeps the retained cleanup gate',()=>{
+  const h=harness();h.api.start();h.session();h.attach();h.response();h.api.cancel();
+  h.receive('error',{error:{code:'usage_limit_exceeded',event_id:h.cancelId()}});
+  assert.deepEqual(h.events,[{kind:'ERROR',code:'X_NATIVE_CANCEL_UNCONFIRMED',retain:true}]);
+  assert.equal(h.api.isTerminal(),false);
 });

@@ -205,6 +205,7 @@ export interface ErrorExtra extends Metadata {
   partialResult?: Result;
   verificationFailure?: FailureDetails;
   requestDiagnostics?: RequestDiagnostics;
+  diagnostics?: Record<string, unknown>;
   error?: string;
   code?: string;
   retryAttempts?: number;

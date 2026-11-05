@@ -44,12 +44,15 @@ function nativeProviderFactory(Core: CoreContract) {
   "use strict";
   const MESSAGES: Readonly<Record<string, string>> = Object.freeze({
     X_NATIVE_USAGE_LIMIT:
-      "X Grok 网页额度或频率受限，请检查账户后在设置中重新保存此连接。",
+      "X Grok 网页额度已用完或受限；请等额度重置，或在设置中改用 API Key 连接。",
     X_NATIVE_LOGIN_REQUIRED: "请先在 X 网页登录后手动重试。",
     X_NATIVE_LAYOUT: "无法识别 X Grok 网页，请手动重试。",
     X_NATIVE_PAGE_ERROR:
       "X Grok 接口未能完成回答；请检查网页，再在设置中重新保存此连接。",
-    X_NATIVE_INTERRUPTED: "X Grok 网页连接中断，请手动重试。",
+    X_NATIVE_INTERRUPTED:
+      "X Grok 请求未完成（连接中断或请求被取消），请检查 X Grok 页面后手动重试。",
+    X_NATIVE_STREAM_ERROR:
+      "X 在服务端中断了这次 Grok 回答，接口没有返回原因；当前最常见的原因是 X 网页 Grok 额度已用尽。请先在 x.com/i/grok 确认，或改用 API Key 连接。",
     X_NATIVE_TIMEOUT: "X Grok 网页响应超时，请手动重试。",
     X_NATIVE_UNSUPPORTED:
       "X 内置 Grok 仅支持已发布帖子核查，不支持草稿或评论。",
@@ -68,6 +71,7 @@ function nativeProviderFactory(Core: CoreContract) {
   });
   const PANEL_ERRORS = new Set([
     "X_NATIVE_USAGE_LIMIT",
+    "X_NATIVE_STREAM_ERROR",
     "X_NATIVE_LOGIN_REQUIRED",
     "X_NATIVE_LAYOUT",
     "X_NATIVE_PAGE_ERROR",
@@ -93,6 +97,20 @@ function nativeProviderFactory(Core: CoreContract) {
     "cancel-ack",
     "unexpected",
   ]);
+  const SAFE_DETAIL = /^[A-Za-z0-9_.:-]{1,80}$/;
+  function nativeDetail(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return undefined;
+    const item = value as Record<string, unknown>;
+    const safe = (entry: unknown) =>
+      typeof entry === "string" && SAFE_DETAIL.test(entry) ? entry : undefined;
+    const detail = {
+      ...(safe(item.status) ? { status: safe(item.status) } : {}),
+      ...(safe(item.reason) ? { reason: safe(item.reason) } : {}),
+      ...(safe(item.errorCode) ? { errorCode: safe(item.errorCode) } : {}),
+    };
+    return Object.keys(detail).length ? detail : undefined;
+  }
   function publicError(value: unknown) {
     const code = Object.hasOwn(
       MESSAGES,
@@ -100,6 +118,7 @@ function nativeProviderFactory(Core: CoreContract) {
     )
       ? (value as ProviderError).code
       : "X_NATIVE_PAGE_ERROR";
+    const detail = nativeDetail((value as ProviderError)?.nativeDetail);
     return {
       code,
       error:
@@ -107,6 +126,7 @@ function nativeProviderFactory(Core: CoreContract) {
         (STAGES.has((value as ProviderError)?.nativeStage!)
           ? " [" + (value as ProviderError).nativeStage + "]"
           : ""),
+      ...(detail ? { nativeDetail: detail } : {}),
     };
   }
   function failure(code: string): ProviderError {
@@ -361,6 +381,8 @@ function nativeProviderFactory(Core: CoreContract) {
                 : "X_NATIVE_PAGE_ERROR",
             );
             if (STAGES.has(message.stage!)) error.nativeStage = message.stage;
+            const detail = nativeDetail(message.detail);
+            if (detail) error.nativeDetail = detail;
             finish(false, error);
           }
           // PING is a keepalive, never reader progress.

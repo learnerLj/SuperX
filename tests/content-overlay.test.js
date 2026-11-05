@@ -4016,6 +4016,24 @@ for(const change of [{revision:8},{identity:'different-account'},{revision:undef
  completeFeedRequest(page,request,'Stale answer must not appear');
  assert.ok(!page.nodes.some(n=>n.textContent.includes('Stale answer must not appear')));
 });
+test('native usage limit error shows the allowance message instead of a generic failure',()=>{
+ const page=fixture({postCount:1});page.configure();
+ const request=analyzeMessages(page)[0];assert.ok(request);
+ page.port.onMessage.emit({type:'START',requestId:request.requestId});
+ page.port.onMessage.emit({type:'ERROR',requestId:request.requestId,code:'X_NATIVE_USAGE_LIMIT',error:'X Grok 网页额度已用完或受限'});
+ page.flush();
+ assert.ok(page.cards().some(card=>card.testShadow.querySelector('.status').textContent.startsWith(ui.t('native.usage','zh-CN'))),JSON.stringify({statuses:page.cards().map(card=>card.testShadow.querySelector('.status').textContent),expected:ui.t('native.usage','zh-CN')}));
+});
+
+test('a server-side stream stop shows the explanation that names the usual cause',()=>{
+ const page=fixture({postCount:1});page.configure();
+ const request=analyzeMessages(page)[0];assert.ok(request);
+ page.port.onMessage.emit({type:'START',requestId:request.requestId});
+ page.port.onMessage.emit({type:'ERROR',requestId:request.requestId,code:'X_NATIVE_STREAM_ERROR',error:'X 在服务端中断了这次 Grok 回答'});
+ page.flush();
+ assert.ok(page.cards().some(card=>card.testShadow.querySelector('.status').textContent.startsWith(ui.t('native.stream','zh-CN'))),JSON.stringify({statuses:page.cards().map(card=>card.testShadow.querySelector('.status').textContent),expected:ui.t('native.stream','zh-CN')}));
+});
+
 test('native adapter fault on a new card asks for extension update',()=>{
  const page=fixture({postCount:1});nativeFaultConfig(page,{ready:false,code:'X_NATIVE_ADAPTER_CHANGED',cacheReady:false});page.intersect();page.tick();
  assert.equal(analyzeMessages(page).length,0);

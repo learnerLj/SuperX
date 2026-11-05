@@ -36,6 +36,11 @@ export interface StageResult extends Metadata {
 export interface ProviderError extends Error, Metadata {
   code: string;
   nativeStage?: string;
+  nativeDetail?: {
+    status?: string;
+    reason?: string;
+    errorCode?: string;
+  };
   partialText?: string;
   partialSources?: Source[];
   partialSearched?: boolean;
