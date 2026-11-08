@@ -1,5 +1,11 @@
 # Changelog
 
+## Show built-in prompts — 2026-11-09
+
+- With "SuperX built-in prompts" selected, Settings → Prompts now shows the shared fact-check, new-post and reply prompts read-only, with a note that language, search tools and source requirements are added automatically. Previously the whole prompt area was hidden in this mode.
+- The read-only preview is separate from the custom editors: it is never saved and does not mark Settings dirty, so saved or unsaved custom prompts are kept when switching styles. The comment prompt is unchanged. Text added in all 12 interface languages.
+- Validation: 1,633 tests passed, 3 platform-specific skips; `npm run check` passed. Local preview screenshots checked the Chinese and English layout. Reload the installed extension to see the change.
+
 ## Export cached fact checks — 2026-10-28
 
 - Add Markdown ZIP and versioned JSONL exports under Settings → Maintenance. Choose a destination, follow progress or cancel; saved files contain cached answers, public post/source links and available metadata. Different analysis variants remain distinct. No cache import or new extension permission.

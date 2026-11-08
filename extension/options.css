@@ -130,6 +130,7 @@ input[type="checkbox"] { flex: 0 0 auto; width: 18px; height: 18px; margin: 0; a
 .prompt-label > label { min-width: 0; margin: 0; }
 .prompt-label .text-button { margin: 0; }
 .prompt-field textarea { min-height: 130px; }
+#preset-prompts textarea { background: var(--hover); border-style: dashed; cursor: text; }
 .compact-section { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
 .compact-section > div { min-width: 0; }
 .compact-section h2 { margin-bottom: 0; }

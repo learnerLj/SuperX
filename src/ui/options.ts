@@ -114,6 +114,11 @@ interface PageElements {
   "prompt-editing-help": HTMLElementTagNameMap["div"];
   "prompt-rules-help": HTMLElementTagNameMap["p"];
   "analysis-prompts": HTMLElementTagNameMap["div"];
+  "preset-prompts": HTMLElementTagNameMap["div"];
+  "preset-prompts-help": HTMLElementTagNameMap["p"];
+  "preset-verify-prompt": HTMLElementTagNameMap["textarea"];
+  "preset-post-draft-prompt": HTMLElementTagNameMap["textarea"];
+  "preset-reply-draft-prompt": HTMLElementTagNameMap["textarea"];
   "reset-verify-prompt": HTMLElementTagNameMap["button"];
   "verify-prompt-help": HTMLElementTagNameMap["p"];
   "verify-prompt": HTMLElementTagNameMap["textarea"];
@@ -1276,6 +1281,7 @@ interface PageElements {
       currentSettings.explanationMode ||
       "preset";
     $("analysis-prompts").hidden = mode !== "custom";
+    $("preset-prompts").hidden = mode === "custom";
     if ($("prompt-editing-help"))
       $("prompt-editing-help").hidden = mode !== "custom";
     $("reset-prompts").hidden = mode !== "custom";
@@ -1807,6 +1813,14 @@ interface PageElements {
       $(id).addEventListener(event, renderSearchFeedback);
   }
   $("prefetch-all").addEventListener("change", renderPrefetch);
+  // Read-only preview of the built-in prompts; not part of promptFields, so it
+  // never enters saving or dirty tracking.
+  for (const name of ["verify", "postDraft", "replyDraft"] as const) {
+    const field = promptFields.find((item) => item.name === name)!;
+    const preview = $(`preset-${field.id}` as "preset-verify-prompt");
+    preview.value = core.DEFAULT_PROMPTS[name];
+    preview.readOnly = true;
+  }
   function restorePrompt(field: (typeof promptFields)[number]) {
     $(field.id).value = core.DEFAULT_PROMPTS[field.name];
   }

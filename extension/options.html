@@ -236,6 +236,21 @@
             <p class="prompt-description" data-i18n="options.promptsHelp" data-i18n-vars='{"limit":12000}'>Save applies to new requests. Leave a field blank to use the default.</p>
             <p id="prompt-rules-help" class="help" data-i18n="options.promptFixedRules">Language, enabled search tools and source requirements are applied automatically.</p>
           </div>
+          <div id="preset-prompts" hidden>
+            <p id="preset-prompts-help" class="prompt-description" data-i18n="options.presetPromptsHelp">These built-in prompts are used now. Language, enabled search tools and source requirements are added automatically. Choose “Custom prompts” to edit your own version.</p>
+            <div class="field prompt-field">
+              <label for="preset-verify-prompt" data-i18n="options.verifyPrompt">Shared fact-check prompt</label>
+              <textarea id="preset-verify-prompt" rows="4" readonly spellcheck="false" dir="auto" aria-describedby="preset-prompts-help"></textarea>
+            </div>
+            <div class="field prompt-field">
+              <label for="preset-post-draft-prompt" data-i18n="options.postDraftPrompt">New post context instructions</label>
+              <textarea id="preset-post-draft-prompt" rows="4" readonly spellcheck="false" dir="auto" aria-describedby="preset-prompts-help"></textarea>
+            </div>
+            <div class="field prompt-field">
+              <label for="preset-reply-draft-prompt" data-i18n="options.replyDraftPrompt">Reply context instructions</label>
+              <textarea id="preset-reply-draft-prompt" rows="4" readonly spellcheck="false" dir="auto" aria-describedby="preset-prompts-help"></textarea>
+            </div>
+          </div>
           <div id="analysis-prompts">
             <div class="field prompt-field">
               <div class="prompt-label">

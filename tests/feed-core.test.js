@@ -1439,6 +1439,28 @@ test('preset and custom Fact Check switches preserve active drafts without expos
   assert.deepEqual(uiMessageTypes(fixture),['GET_UI_LANGUAGE']);
 });
 
+test('preset Fact Check shows the built-in prompts read-only without saving them over custom drafts',async()=>{
+  const fixture=uiPageFixture('options',core.normalizeSettings({...API_UI_SETTINGS,explanationMode:'custom',verifyPrompt:'X',postDraftPrompt:'My new post instructions',replyDraftPrompt:'My reply instructions'}));await settleUI();await settleUI();
+  const previews={verify:'preset-verify-prompt',postDraft:'preset-post-draft-prompt',replyDraft:'preset-reply-draft-prompt'};
+  assert.equal(fixture.ids.get('preset-prompts').hidden,true);
+  fixture.ids.get('verify-prompt').value='Unsaved custom edit';fixture.ids.get('verify-prompt').listeners.input();
+  fixture.ids.get('explanation-mode').value='preset';fixture.ids.get('explanation-mode').listeners.change();
+  assert.equal(fixture.ids.get('preset-prompts').hidden,false);assert.equal(fixture.ids.get('analysis-prompts').hidden,true);
+  for(const [name,id]of Object.entries(previews)){assert.equal(fixture.ids.get(id).readOnly,true);assert.equal(fixture.ids.get(id).value,core.DEFAULT_PROMPTS[name]);}
+  assert.notEqual(fixture.ids.get('comments-prompt').hidden,true);
+  fixture.ids.get('explanation-mode').value='custom';fixture.ids.get('explanation-mode').listeners.change();
+  assert.equal(fixture.ids.get('preset-prompts').hidden,true);assert.equal(fixture.ids.get('verify-prompt').value,'Unsaved custom edit');
+  fixture.ids.get('verify-prompt').value='X';fixture.ids.get('verify-prompt').listeners.input();
+  fixture.ids.get('explanation-mode').value='preset';fixture.ids.get('explanation-mode').listeners.change();
+  const form=fixture.ids.get('settings-form');await form.listeners.submit({preventDefault(){},currentTarget:form});
+  const saved=fixture.messages.find(message=>message.type==='SAVE_SETTINGS');
+  assert.equal(saved.settings.explanationMode,'preset');assert.equal(saved.settings.verifyPrompt,'X');assert.equal(saved.settings.postDraftPrompt,'My new post instructions');assert.equal(saved.settings.replyDraftPrompt,'My reply instructions');
+  const reopened=uiPageFixture('options',saved.settings);await settleUI();await settleUI();
+  assert.equal(reopened.ids.get('preset-prompts').hidden,false);assert.equal(reopened.ids.get('preset-verify-prompt').value,core.DEFAULT_PROMPTS.verify);
+  reopened.ids.get('explanation-mode').value='custom';reopened.ids.get('explanation-mode').listeners.change();
+  assert.equal(reopened.ids.get('verify-prompt').value,'X');
+});
+
 test('saving preset Fact Check retains custom active drafts and optional archived explanation for future use',async()=>{
   const fixture=uiPageFixture('options',core.normalizeSettings({explanationMode:'custom',explainPrompt:'My archived explanation',verifyPrompt:'My verify instructions',postDraftPrompt:'My new post instructions',replyDraftPrompt:'My reply instructions',commentsPrompt:'My comments instructions'}));await settleUI();await settleUI();
   fixture.ids.get('explanation-mode').value='preset';fixture.ids.get('explanation-mode').listeners.change();
