@@ -109,7 +109,7 @@ test('JSONL is versioned, preserves analyses and variants, and exports a strict 
   assert.deepEqual(await exportCache(options(indexedDB, output, 'jsonl', { onProgress: p => progress.push(p) })), { exported: 4, skipped: 0 });
   const [manifest, ...rows] = lines(output);
   assert.equal(manifest.type, 'manifest'); assert.equal(manifest.format, 'superx-cache');
-  assert.equal(manifest.version, 1); assert.equal(manifest.exportedAt, timestamp); assert.equal(manifest.consistency, 'read-time');
+  assert.equal(manifest.version, 2); assert.equal(manifest.exportedAt, timestamp); assert.equal(manifest.consistency, 'read-time');
   assert.match(manifest.description, /not a consistent snapshot/);
   assert.equal(rows.length, 4); assert.equal(new Set(rows.map(r => r.variantId)).size, 4);
   for (const row of rows) {
@@ -171,7 +171,7 @@ test('empty databases are valid in both formats; bad bodies are counted without 
     assert.deepEqual(await exportCache(options(indexedDB, output, format)), { exported: 0, skipped: 0 });
     if (format === 'jsonl') assert.equal(lines(output).length, 1);
     else { const zip = await unzip(output); assert.deepEqual(zip.entries.map(e => e.filename), ['README.md','export-summary.json']);
-      assert.deepEqual(JSON.parse(await zip.text(zip.entries[1])), { exported: 0, skipped: 0, exportedAt: timestamp, version: 1, consistency: 'read-time' }); await zip.reader.close(); }
+      assert.deepEqual(JSON.parse(await zip.text(zip.entries[1])), { exported: 0, skipped: 0, exportedAt: timestamp, version: 2, consistency: 'read-time' }); await zip.reader.close(); }
     await assertReleased(indexedDB);
   }
   const values = [null, undefined, {}, { text: 42 }, { text: '' }, { text: ' \n\t' }, { text: body, verificationStatus: 'old-status' }, { text: 'valid', verificationStatus: 'failed' }];
@@ -195,8 +195,30 @@ test('real ZIP contains STORE Markdown, escaped metadata, original body, and a f
   const html = marked.parse(md);
   assert.ok(!html.includes('<script>')); assert.ok(!html.includes('<h1>fake'));
   assert.ok(!md.includes(secret));
-  const readme = await zip.text(zip.entries[0]); assert.match(readme, /not a consistent snapshot/); assert.match(readme, /JSONL/); assert.match(readme, /no original post text/);
-  assert.deepEqual(JSON.parse(await zip.text(zip.entries.at(-1))), { exported: 2, skipped: 0, exportedAt: timestamp, version: 1, consistency: 'read-time' });
+  const readme = await zip.text(zip.entries[0]); assert.match(readme, /not a consistent snapshot/); assert.match(readme, /JSONL/); assert.match(readme, /original-post text and author/); assert.match(readme, /no visit history, comment drafts/);
+  assert.deepEqual(JSON.parse(await zip.text(zip.entries.at(-1))), { exported: 2, skipped: 0, exportedAt: timestamp, version: 2, consistency: 'read-time' });
+  await zip.reader.close(); await assertReleased(indexedDB);
+});
+
+test('v2 rows carry only the saved snapshot text/author/url, fenced as plain text', async () => {
+  const indexedDB = new IDBFactory(), store = Cache.create({ indexedDB, keyRange: IDBKeyRange });
+  const withPost = key('api'), urlOnly = key('build', { post: { url: 'https://x.com/bob/status/777' } });
+  const text = '第一行 [click](https://evil.test) ```\n# heading <script>run</script>\n\n> nested ````';
+  await store.put(withPost, result(body), 1e7, { url: 'https://x.com/Alice/status/12345', text, author: 'Alice @alice',
+    language: 'zh-CN', hasMedia: true, images: [secret], visits: 9, lastViewedAt: 1 });
+  await store.put(urlOnly, result('no snapshot'), 1e7); await store.close();
+  const output = sinkWith(); await exportCache(options(indexedDB, output));
+  const rows = lines(output).slice(1), a = rows.find(r => r.variantId === hash(withPost)), b = rows.find(r => r.variantId === hash(urlOnly));
+  assert.deepEqual(a.post, { url: 'https://x.com/alice/status/12345', text, author: 'Alice @alice' });
+  assert.equal('post' in b, false);
+  assert.ok(!output.bytes().toString('utf8').includes(secret)); assert.ok(!output.bytes().toString('utf8').includes('visits'));
+  const zipOut = sinkWith(); await exportCache(options(indexedDB, zipOut, 'markdown'));
+  const zip = await unzip(zipOut), md = await zip.text(zip.entries.find(e => e.filename === `analysis-${hash(withPost)}.md`));
+  assert.match(md, /Author: Alice @alice/);
+  const document = new JSDOM(marked.parse(md)).window.document;
+  assert.equal(document.querySelectorAll('script,h1').length, 0);
+  assert.ok(![...document.querySelectorAll('a')].some(a => a.getAttribute('href') === 'https://evil.test'));
+  assert.equal(document.querySelector('pre code').textContent, text + '\n');
   await zip.reader.close(); await assertReleased(indexedDB);
 });
 

@@ -1,4 +1,11 @@
-import { create } from "../background/answer-cache";
+import {
+  create,
+  httpUrl,
+  keyMetadata,
+  provider,
+  string,
+  type ExportPost,
+} from "../background/answer-cache";
 import type { GenerationMetadata, Source, Usage } from "../shared/contracts";
 
 export type ExportFormat = "markdown" | "jsonl";
@@ -14,7 +21,7 @@ export interface ExportProgress {
 export interface ExportManifest {
   type: "manifest";
   format: "superx-cache";
-  version: 1;
+  version: 2;
   exportedAt: string;
   consistency: "read-time";
   description: string;
@@ -35,10 +42,12 @@ export interface ExportAnalysis {
   usageComplete?: boolean;
   usageByStage?: GenerationMetadata["usageByStage"];
   modelByStage?: GenerationMetadata["modelByStage"];
+  /** Saved snapshot of the original post, when the record has one. */
+  post?: ExportPost;
 }
 export interface ExportSummary extends ExportProgress {
   exportedAt: string;
-  version: 1;
+  version: 2;
   consistency: "read-time";
 }
 
@@ -46,162 +55,6 @@ function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
-}
-function string(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value : null;
-}
-function parsedArray(value: unknown): unknown[] | null {
-  if (typeof value !== "string") return null;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as unknown[]) : null;
-  } catch {
-    return null;
-  }
-}
-function provider(value: unknown): string | null {
-  return value === "api" ||
-    value === "oauth" ||
-    value === "build" ||
-    value === "x-native"
-    ? value
-    : null;
-}
-function effort(value: unknown): string | null {
-  return typeof value === "string" &&
-    [
-      "auto",
-      "none",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-    ].includes(value)
-    ? value
-    : null;
-}
-function httpUrl(value: unknown): string | null {
-  if (typeof value !== "string" || /[\u0000-\u0020\u007f]/u.test(value))
-    return null;
-  try {
-    const url = new URL(value);
-    return (url.protocol === "http:" || url.protocol === "https:") &&
-      !url.username &&
-      !url.password
-      ? url.href
-      : null;
-  } catch {
-    return null;
-  }
-}
-function postUrl(value: unknown): string | null {
-  const safe = httpUrl(value);
-  if (!safe) return null;
-  const url = new URL(safe);
-  if (
-    !["x.com", "twitter.com", "www.x.com", "www.twitter.com"].includes(
-      url.hostname,
-    ) ||
-    url.port ||
-    !/^\/(?:[A-Za-z0-9_]+|i\/web)\/status\/\d+\/?$/u.test(url.pathname)
-  )
-    return null;
-  // The public post identity does not need query parameters or a fragment.
-  return `${url.protocol}//${url.hostname}${url.pathname}`;
-}
-function keyMetadata(
-  key: string,
-): Pick<
-  ExportAnalysis,
-  "postUrl" | "language" | "provider" | "model" | "reasoningEffort"
-> {
-  const empty = {
-    postUrl: null,
-    language: null,
-    provider: null,
-    model: null,
-    reasoningEffort: null,
-  };
-  const parts = parsedArray(key);
-  if (!parts) return empty;
-  if (
-    parts.length === 9 &&
-    parts[0] === "SuperX-native-answers-v1" &&
-    parts[1] === "x-native" &&
-    typeof parts[2] === "string" &&
-    typeof parts[4] === "string" &&
-    typeof parts[5] === "string" &&
-    parts[6] === "native-prompt-v1-fast-markdown-format" &&
-    typeof parts[7] === "string" &&
-    parts[8] === "fast"
-  ) {
-    return {
-      postUrl: postUrl(parts[3]),
-      language: string(parts[5]),
-      provider: "x-native",
-      model: "fast",
-      reasoningEffort: null,
-    };
-  }
-  if (
-    parts.length !== 13 ||
-    parts[0] !== "GrokFirst-v1" ||
-    !["api", "oauth", "build"].includes(String(parts[1])) ||
-    typeof parts[3] !== "string" ||
-    typeof parts[4] !== "boolean" ||
-    typeof parts[5] !== "boolean" ||
-    parts[6] !== "api-v11-context-images" ||
-    !["preset", "custom"].includes(String(parts[7])) ||
-    parts[8] !== "only" ||
-    parts[10] !== "fact-check-prompts-v2-deeper" ||
-    typeof parts[11] !== "string" ||
-    !effort(parts[12])
-  )
-    return empty;
-  let model: string | null;
-  const account = parts[2];
-  if (parts[1] === "api") {
-    if (typeof account !== "string") return empty;
-    model = string(account);
-  } else if (parts[1] === "oauth") {
-    if (
-      !Array.isArray(account) ||
-      account.length !== 2 ||
-      (account[0] !== null && typeof account[0] !== "string") ||
-      typeof account[1] !== "string"
-    )
-      return empty;
-    model = string(account[1]);
-  } else {
-    if (
-      !Array.isArray(account) ||
-      account.length !== 3 ||
-      account[0] !== "official-ws-v1" ||
-      typeof account[1] !== "number" ||
-      !Number.isFinite(account[1]) ||
-      typeof account[2] !== "string"
-    )
-      return empty;
-    model = string(account[2]);
-  }
-  const input = parsedArray(parts[9]);
-  if (
-    !input ||
-    input.length !== 4 ||
-    input[0] !== "post-input-v4-source-full-url" ||
-    input[1] !== parts[1] ||
-    typeof input[3] !== "string"
-  )
-    return empty;
-  return {
-    postUrl: postUrl(input[2]),
-    language: string(input[3]),
-    provider: provider(parts[1]),
-    model,
-    reasoningEffort: effort(parts[12]),
-  };
 }
 function iso(value: unknown): string | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
@@ -262,6 +115,7 @@ function usage(value: unknown): Usage | undefined {
 async function analysis(
   key: string,
   value: unknown,
+  post: ExportPost | null = null,
 ): Promise<ExportAnalysis | null> {
   const raw = object(value);
   if (!raw || typeof raw.text !== "string" || !raw.text.trim()) return null;
@@ -309,6 +163,8 @@ async function analysis(
     if (clean) (result.usageByStage ??= {})[stage] = clean;
     if (model) (result.modelByStage ??= {})[stage] = model;
   }
+  if (post)
+    result.post = { url: post.url, text: post.text, author: post.author };
   return result;
 }
 // Only metadata is escaped: the analysis body remains byte-for-byte Markdown.
@@ -335,12 +191,29 @@ function markdown(value: ExportAnalysis): string {
     .map(([label, text]) => `${label}: ${markdownText(text ?? null)}`)
     .join("\n\n");
   const original = `Post URL: ${value.postUrl ? markdownUrl(value.postUrl) : "unknown"}`;
+  // The saved post text is untrusted user content: a fenced code block keeps
+  // it verbatim while no heading, link, autolink or HTML in it can render.
+  const fence = "`".repeat(
+    Math.max(
+      3,
+      ...[...(value.post?.text.matchAll(/`+/gu) || [])].map(
+        (m) => m[0].length + 1,
+      ),
+    ),
+  );
+  const snapshot = value.post
+    ? `\n\nAuthor: ${markdownText(value.post.author || null)}\n\n${
+        value.post.text
+          ? `${fence}text\n${value.post.text.replace(/\r\n?|[\u2028\u2029]/gu, "\n")}\n${fence}`
+          : "Post text: none"
+      }`
+    : "";
   const sources = value.sources
     .map(
       (source) => `- ${markdownText(source.title)} ${markdownUrl(source.url)}`,
     )
     .join("\n");
-  return `${original}\n\n${header}\n\n---\n\n${value.text}\n\n---\n\n## Sources\n\n${sources || "No public sources recorded."}\n`;
+  return `${original}${snapshot}\n\n${header}\n\n---\n\n${value.text}\n\n---\n\n## Sources\n\n${sources || "No public sources recorded."}\n`;
 }
 function check(signal?: AbortSignal): void {
   if (signal?.aborted)
@@ -375,11 +248,11 @@ export async function exportCache(options: {
     const exportedAt = iso(options.exportedAt ?? Date.now());
     if (!exportedAt) throw new Error("Invalid export timestamp.");
     const description =
-      "Records are read in separate batches, not a consistent snapshot. Concurrent writes/deletions may change the export. Analysis only: no original post text, webpage mirrors or image files. Versioned JSONL is an archive format, not an account-cache import format.";
+      "Records are read in separate batches, not a consistent snapshot. Concurrent writes/deletions may change the export. Analysis-centred: includes the saved original-post text and author when a record has them; no visit history, comment drafts, webpage mirrors or image files. Versioned JSONL is an archive format, not an account-cache import format.";
     const manifest: ExportManifest = {
       type: "manifest",
       format: "superx-cache",
-      version: 1,
+      version: 2,
       exportedAt,
       consistency: "read-time",
       description,
@@ -412,7 +285,7 @@ export async function exportCache(options: {
     if (zip)
       await add(
         "README.md",
-        `# SuperX cache export\n\nVersion: 1\n\nExported at: ${exportedAt}\n\nConsistency: read-time\n\n${description}\n\nEach analysis-<SHA256>.md contains one cached analysis variant. The ID hashes its private cache key; private keys are omitted. export-summary.json is written last and records exported/skipped counts. A successful export requires the archive and destination to close successfully.\n`,
+        `# SuperX cache export\n\nVersion: 2\n\nExported at: ${exportedAt}\n\nConsistency: read-time\n\n${description}\n\nEach analysis-<SHA256>.md contains one cached analysis variant. The ID hashes its private cache key; private keys are omitted. export-summary.json is written last and records exported/skipped counts. A successful export requires the archive and destination to close successfully.\n`,
       );
     else if (options.format === "jsonl")
       await write(encoder.encode(JSON.stringify(manifest) + "\n"));
@@ -424,7 +297,7 @@ export async function exportCache(options: {
       check(signal);
       for (const item of page.items) {
         check(signal);
-        const record = await analysis(item.key, item.value);
+        const record = await analysis(item.key, item.value, item.post);
         check(signal);
         if (!record) progress.skipped++;
         else {
@@ -442,7 +315,7 @@ export async function exportCache(options: {
       const summary: ExportSummary = {
         ...progress,
         exportedAt,
-        version: 1,
+        version: 2,
         consistency: "read-time",
       };
       await add("export-summary.json", JSON.stringify(summary) + "\n");

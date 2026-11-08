@@ -31,7 +31,7 @@ After `npm ci` and `npm run build`, load the `extension/` directory as an unpack
 | `src/content/content.ts`, `overlay-layout.ts` | X integration, right-column layout and result UI |
 | `src/content/markdown-renderer.ts` | Restricted Markdown-to-DOM rendering |
 | `src/ui/` (scripts), `extension/*.html` / CSS (static UI) | Configuration and localized extension UI |
-| `src/background/history-store.ts`, `src/ui/history.ts` | Local 24-hour post history, retention and its reading interface |
+| `src/background/answer-cache.ts`, `post-records.ts`, `src/ui/history.ts` | Persistent answer cache and its fact-check records (sole IndexedDB owner, LRU budget, paging/search), record normalization and the records page |
 | `tests/`, `demo/`, `tools/` | Automated checks, previews and release helpers |
 
 The website is maintained separately and is not part of this repository or source releases. Some internal names retain GrokFirst identifiers for migration compatibility. Renaming a storage key, port or cached identity needs compatibility review rather than a broad textual replacement.

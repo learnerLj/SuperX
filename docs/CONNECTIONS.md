@@ -138,7 +138,7 @@ OAuth 已收到 HTTP 200 后的流错误、未完成或超时不自动重放；�
 
 **Grok API Key 模式**在 Windows 和 Mac 上都只需浏览器：打开「设置 → 连接 → Grok API Key」，按需展开获取帮助。使用订阅 API 额度时，去 [Grok Dashboard → API Keys](https://grok.com/dashboard/api-keys) 创建 **Grok Inference** 类型而非 Cursor 类型的 Key，按账号要求授权 Chat／模型；使用按量付费 API 时，去 [xAI 控制台](https://console.x.ai/) 创建 Key、购买额度。两种来源均粘贴到同一个 API Key 输入框并保存，不另选来源。默认在本机自动加密记住，无需 SuperX 密码；保存不代表已验证 API 权限或剩余额度。用量和费用请到创建 Key 的账户查看。
 
-符合条件的订阅 API 使用计入共享周额度；也可在 [xAI 控制台](https://console.x.ai/) 购买按量付费额度。购买普通额度不等于启用额外收费的 Priority Processing，SuperX 当前使用标准处理。三种模式均默认在停止滚动、帖子连续可见满 1 秒后自动分析，设置可改为 0–30 秒，0 秒立即分析；API Key／OAuth 默认共享并发上限 3（可设 1–8），本机模式逐项执行。手动重新分析、评论及浏览历史不受停留等待影响。
+符合条件的订阅 API 使用计入共享周额度；也可在 [xAI 控制台](https://console.x.ai/) 购买按量付费额度。购买普通额度不等于启用额外收费的 Priority Processing，SuperX 当前使用标准处理。三种模式均默认在停止滚动、帖子连续可见满 1 秒后自动分析，设置可改为 0–30 秒，0 秒立即分析；API Key／OAuth 默认共享并发上限 3（可设 1–8），本机模式逐项执行。手动重新分析和评论不受停留等待影响。
 
 **本机 Grok Build · CLI / ACP 模式**无需安装 SuperX 提供的其他程序：先按 [Grok 官方说明](https://github.com/xai-org/grok-build) 安装并用 `grok login` 登录。打开 SuperX 的逐步引导，选择 Windows 或 macOS，生成并复制启动命令；Windows 在 PowerShell、Mac 在终端执行。保持该窗口打开，回到 SuperX 检查连接、保存连接，再选择模型／推理档位并保存设置。检查连接不发送核查问题。
 

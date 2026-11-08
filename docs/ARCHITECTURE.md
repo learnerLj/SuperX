@@ -2,7 +2,7 @@
 
 ## 源码与构建
 
-扩展全部自有运行时的 TypeScript 源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。28 个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不提交到 Git，也不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
+扩展全部自有运行时的 TypeScript 源码在 `src/`，开启 `strict`、`noUncheckedIndexedAccess` 和 `noFallthroughCasesInSwitch`。安装目录仍是 `extension/`，避免更换现有 Chrome 加载路径。27 个带 `GENERATED` 标记的 JavaScript 入口由 TypeScript 构建生成，不提交到 Git，也不能直接编辑；构建检查会拒绝源文件和安装文件不一致的状态。
 
 ```sh
 npm ci
@@ -78,15 +78,19 @@ src/background/worker.ts 保存完整成功答案
 
 默认窗口是视口下方最近的五个有效帖子位置；数量 0 关闭，也可选择本页全部已挂载帖子。图片、视频和引用帖即使没有正文文字，也按有效原帖链接进入窗口。候选排除推广、无效几何和当前可见的重复帖子，不因帖子曾短暂露出而跳过。已有答案和在途任务保留窗口位置并直接复用；未开始的帖子按最近顺序进入调度。窗口随滚动按空间位置更新，不等待可见帖子的停留计时。完成状态不影响排名，因此停在原地不会完成五条后继续向远处补五条。同帖出现多个 DOM 实例时，共用一份在途核查和已完成答案，各自显示同一流式结果。SuperX 不自动滚动，也不无限拉取 X 时间线。
 
-可见帖子和预加载共用既有并发，native 上限为 10。后台按评论/草稿、可见核查、预加载顺序安排等待任务，同级 FIFO；不会抢占已运行任务。预加载进入视口后以同一个 request ID 提升优先级，不重新请求。窗口缩小或移走时只条件撤销尚未开始的任务。历史记录只由实际可见触发，预加载不会提前记作已读。
+可见帖子和预加载共用既有并发，native 上限为 10。后台按评论/草稿、可见核查、预加载顺序安排等待任务，同级 FIFO；不会抢占已运行任务。预加载进入视口后以同一个 request ID 提升优先级，不重新请求。窗口缩小或移走时只条件撤销尚未开始的任务。预加载与可见核查一样，答案完成即生成核查记录；浏览或预加载本身不记录任何内容，也没有已读或访问次数。
 
 数量、全部开关和缓存容量属于调度/存储设置，不是生成参数；修改它们不会取消在途核查或使答案缓存失效。预加载需要正常服务额度，缓存命中则不启动模型；提前开始仍不保证每条在用户滚到前都已完成。
 
 ## 持久缓存
 
-完整成功答案长期保存，没有 TTL；默认预算 1024 MB，可配置。只计算序列化 key/result 的逻辑字节，数据库文件自身有额外开销，不预分配 1 GB。LRU 读取会更新最近使用顺序，超限或缩容删除最久未使用的条目。IndexedDB 事务同时更新条目与计数，避免并发写入超额；不在启动时加载全库。
+完整成功答案长期保存，没有 TTL；默认预算 1024 MB，可配置。IndexedDB v2 有 `answers` 与 `posts` 两个 store：`answers` 以 `postId` 索引归属帖子，`posts` 保存核查记录（规范 URL/ID、核查时的正文/作者/语言/媒体标记、最近一次评论草稿、`activityAt` 和 `lastUsed`）。预算按 `answers` 序列化 key/result 与 `posts` 记录的逻辑字节合计，数据库文件自身有额外开销，不预分配 1 GB。写入、命中读取和写评论都会刷新帖子的 `lastUsed`；超限或缩容按帖子 LRU 整组删除（无归属的旧答案先删），同一事务内删除已无答案也无评论的空帖子。IndexedDB 事务同时更新条目与计数，避免并发写入超额；不在启动时加载全库。
 
-缓存身份包括服务、账号（适用时）、原帖 URL、语言和有效核查设置。native 使用公开 X profile 标记，无法识别账号时跳过持久缓存。手动重新分析绕过缓存，成功才替换；失败/取消/不完整输出不覆盖旧成功答案。缓存与 24 小时浏览历史分开。
+记录 = 有已生成回答或评论草稿的帖子；`activityAt` 取最近一次回答或评论完成时间。核查记录页以 `[activityAt, id]` 降序游标每页 50 条（`GET_RECORDS`），搜索在 worker 中按批扫描（单次上限 2000 帖或 8 MB，未扫完返回续查游标），每条记录列出所有来源/账号的答案版本，默认选中与当前设置最接近的一条。`GET_CACHE_USAGE` 在一个只读事务里读字节计数与条数并附带上限，供记录页与设置页的容量条使用。`HISTORY_VISIT` 只保留 ack 协议（暂停、epoch 不符或批次无效时为 false），不写任何数据；`HISTORY_CHANGED` 以 1 秒尾随节流广播，删除与清空才递增内存中的 epoch。
+
+v1 升级到 v2 后在后台分批回填 `postId` 与帖子记录（`backfillDone` 可续跑）；回填完成后一次性迁移旧 `superxHistory`：仅迁移 24 小时内、已有缓存答案或带评论草稿的帖子正文与评论，丢弃浏览时间、次数、开关及旧分析，成功后移除旧键。
+
+缓存身份包括服务、账号（适用时）、原帖 URL、语言和有效核查设置。native 使用公开 X profile 标记，无法识别账号时跳过持久缓存。手动重新分析绕过缓存，成功才替换；失败/取消/不完整输出不覆盖旧成功答案。核查记录就是这份缓存的视图，没有独立的浏览历史存储。
 
 清空由后台 epoch 和同步建立的清空 barrier 协调：清空前发起的读取返回取消，清空后发起的读取等待清空完成；旧在途任务不能恢复被清掉的缓存。
 
@@ -96,11 +100,11 @@ src/background/worker.ts 保存完整成功答案
 
 `src/background/answer-cache.ts` 是数据库唯一 owner；`readPage` 使用只读事务与排他主键游标，每批最多 128 条／1 MiB，单条超预算仍推进。`src/export/cache-export.ts` 共用此接口，逐条转换、写入后释放正文；内存保留当前批及 ZIP 中央目录等元数据，不随整个正文总量增长。分批读取不是一致快照：并发新增、替换、清除可能影响随后读取的内容。
 
-JSONL UTF-8 首行是 `{type:"manifest",format:"superx-cache",version:1,exportedAt,consistency:"read-time",description}`；后续每行 `type:"analysis"`，包含 `variantId`（内部 key 的 SHA-256）、`postUrl`、`language`、`provider`、`model`、`reasoningEffort`、`completedAt`、原始 Markdown `text`、HTTP(S) `sources` 及已有用量元数据。时间为 ISO 8601 UTC，未知字段为 null 或省略；坏正文计入跳过数。只解析已知缓存 key 版本，不猜测旧 key 的链接和语言。仅导出明确字段，不带内部 key、账号／credential ID、自定义 prompt、连接设置、诊断文本或任意未知字段。
+JSONL UTF-8 首行是 `{type:"manifest",format:"superx-cache",version:2,exportedAt,consistency:"read-time",description}`；后续每行 `type:"analysis"`，包含 `variantId`（内部 key 的 SHA-256）、`postUrl`、`language`、`provider`、`model`、`reasoningEffort`、`completedAt`、原始 Markdown `text`、HTTP(S) `sources` 及已有用量元数据；所属记录保存了原帖时另有 `post:{url,text,author}`。version 2 相对 1 只新增该可选字段。时间为 ISO 8601 UTC，未知字段为 null 或省略；坏正文计入跳过数。只解析已知缓存 key 版本，不猜测旧 key 的链接和语言。仅导出明确字段，不带内部 key、账号／credential ID、自定义 prompt、连接设置、诊断文本或任意未知字段。
 
-Markdown ZIP 包含说明 `README.md`、每条 `analysis-<完整 variantId>.md` 和末尾 `export-summary.json`（导出/跳过数、时间、版本和一致性口径）。正文保持原 Markdown，附原帖链接、核查时间、模型、语言和来源；文件名不使用模型输出或帖子文本。zip.js 2.24.0 本地定制核心以 STORE 顺序流写、自动 ZIP64，关闭 worker、压缩/WASM加载路径，无远端资源；许可随包。ZIP64 支持超过 65535 条分析。
+Markdown ZIP 包含说明 `README.md`、每条 `analysis-<完整 variantId>.md` 和末尾 `export-summary.json`（导出/跳过数、时间、版本和一致性口径）。正文保持原 Markdown，附原帖链接、已保存的原帖作者与正文（正文放入比其中任何反引号串都长的 fenced code block，避免被当作 Markdown 或自动链接）、核查时间、模型、语言和来源；文件名不使用模型输出或帖子文本。zip.js 2.24.0 本地定制核心以 STORE 顺序流写、自动 ZIP64，关闭 worker、压缩/WASM加载路径，无远端资源；许可随包。ZIP64 支持超过 65535 条分析。
 
-这些文件用于阅读、Obsidian 归档与结构化处理，当前没有导入入口。缓存未保存原帖正文、来源网页全文或图片本体，导出不会补抓。导出的答案与来源文字仍属于用户内容，不应当作可信 HTML 或执行代码。
+这些文件用于阅读、Obsidian 归档与结构化处理，当前没有导入入口。导出只包含记录里已保存的原帖正文与作者，不含评论草稿、来源网页全文或图片本体，也不会补抓。导出的答案与来源文字仍属于用户内容，不应当作可信 HTML 或执行代码。
 
 依据：[Chrome 文件系统访问及用户手势](https://developer.chrome.com/docs/capabilities/web-apis/file-system-access)、[zip.js 官方文档](https://gildas-lormeau.github.io/zip.js/api/index.html)。
 
