@@ -7430,6 +7430,44 @@ export interface API {
       "उत्तर का विश्लेषण केवल क्लिक करने पर होता है।",
     ],
   });
+  section(["options.presetPromptsHelp"], {
+    en: [
+      "These built-in prompts are used now. Language, enabled search tools and source requirements are added automatically. Choose “Custom prompts” to edit your own version.",
+    ],
+    "zh-CN": [
+      "当前使用以下内置提示词。语言、已启用的搜索工具和来源要求会自动附加。选择“自定义提示词”可编辑自己的版本。",
+    ],
+    "zh-TW": [
+      "目前使用以下內建提示詞。語言、已啟用的搜尋工具和來源要求會自動附加。選擇「自訂提示詞」可編輯自己的版本。",
+    ],
+    ja: [
+      "現在は以下の組み込みプロンプトを使用しています。言語、有効な検索ツール、出典の要件は自動で追加されます。独自の内容に編集するには「カスタムプロンプト」を選んでください。",
+    ],
+    ko: [
+      "현재 아래의 기본 제공 프롬프트를 사용합니다. 언어, 사용 중인 검색 도구와 출처 요구 사항은 자동으로 추가됩니다. 직접 편집하려면 ‘사용자 지정 프롬프트’를 선택하세요.",
+    ],
+    es: [
+      "Ahora se usan estas instrucciones integradas. El idioma, las búsquedas activadas y los requisitos de fuentes se añaden automáticamente. Elige «Instrucciones personalizadas» para editar tu propia versión.",
+    ],
+    fr: [
+      "Ces instructions intégrées sont utilisées actuellement. La langue, les recherches activées et les exigences de sources sont ajoutées automatiquement. Choisissez « Instructions personnalisées » pour modifier votre propre version.",
+    ],
+    de: [
+      "Derzeit werden diese integrierten Anweisungen verwendet. Sprache, aktivierte Suchwerkzeuge und Quellenanforderungen werden automatisch ergänzt. Wähle „Eigene Prompts“, um eine eigene Version zu bearbeiten.",
+    ],
+    pt: [
+      "Estas instruções integradas estão em uso agora. Idioma, pesquisas ativadas e requisitos de fontes são adicionados automaticamente. Escolha “Instruções personalizadas” para editar sua própria versão.",
+    ],
+    ar: [
+      "تُستخدم الآن هذه التعليمات المدمجة. تُضاف اللغة وأدوات البحث المفعّلة ومتطلبات المصادر تلقائيًا. اختر «تعليمات مخصصة» لتحرير نسختك الخاصة.",
+    ],
+    ru: [
+      "Сейчас используются эти встроенные инструкции. Язык, включённые инструменты поиска и требования к источникам добавляются автоматически. Выберите «Свои инструкции», чтобы отредактировать свою версию.",
+    ],
+    hi: [
+      "अभी ये बिल्ट-इन प्रॉम्प्ट उपयोग हो रहे हैं। भाषा, चालू खोज टूल और स्रोत संबंधी आवश्यकताएँ अपने आप जोड़ी जाती हैं। अपना संस्करण संपादित करने के लिए कस्टम प्रॉम्प्ट चुनें।",
+    ],
+  });
   section(["rail.resize", "rail.resizeHint"], {
     en: [
       "Resize analysis panel",
