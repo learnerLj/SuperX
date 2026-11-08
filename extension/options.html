@@ -21,7 +21,7 @@
           <a href="#language-heading" data-i18n="options.languageTitle">Language</a>
           <a href="#prompts-heading" data-i18n="options.promptsTitle">Prompts</a>
           <a id="maintenance-link" href="#maintenance-heading" data-i18n="options.maintenance">Maintenance &amp; troubleshooting</a>
-          <a href="history.html" class="sidebar-page-link" data-i18n="common.history">Browsing history</a>
+          <a href="history.html" class="sidebar-page-link" data-i18n="common.history">Fact-check records</a>
         </nav>
       </aside>
       <main class="settings-main">
@@ -297,7 +297,12 @@
         <div class="field">
           <label for="answer-cache-limit" data-i18n="options.cacheLimit">Answer cache limit (MB)</label>
           <input id="answer-cache-limit" type="number" min="1" max="1048576" step="1" value="1024" required aria-describedby="answer-cache-limit-help">
-          <p id="answer-cache-limit-help" class="help" data-i18n="options.cacheLimitHelp">Default: 1024 MB (1 GB). Answers do not expire. Least recently used answers are removed when the limit is reached. Save to apply.</p>
+          <p id="answer-cache-limit-help" class="help" data-i18n="options.cacheLimitHelp">Default: 1024 MB (1 GB). Completed answers and fact-check records do not expire. When full, the least recently used records are removed. Save to apply.</p>
+          <div id="cache-usage" class="cache-usage" hidden>
+            <div id="cache-usage-meter" class="usage-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-describedby="cache-usage-text" data-i18n-aria="history.usageLabel" aria-label="Fact-check record storage"><span id="cache-usage-fill" class="usage-fill"></span></div>
+            <p id="cache-usage-text" class="usage-text"></p>
+            <p id="cache-usage-hint" class="help" hidden><span data-i18n="history.usageHint">Over the limit, the least recently used records are deleted.</span> <a href="#answer-cache-limit" data-i18n="history.usageSettings">Change the limit</a></p>
+          </div>
         </div>
         <div class="cache-export-section" aria-labelledby="cache-export-heading">
           <h3 id="cache-export-heading" data-i18n="export.heading">Export cached fact checks</h3>
@@ -312,7 +317,7 @@
         <div class="maintenance-action compact-section" aria-labelledby="cache-heading">
           <div>
             <h3 id="cache-heading" data-i18n="options.answerCache">Clear answer cache</h3>
-            <p class="section-description" data-i18n="options.cacheHelp">Clears cached answers without deleting browsing history. Refresh X or retry a post afterward.</p>
+            <p class="section-description" data-i18n="options.cacheHelp">Clears cached answers, fact-check records and the session comment cache. Refresh X or retry a post afterward.</p>
           </div>
           <button id="clear-cache" class="secondary-button" type="button" data-i18n="options.answerCache">Clear answer cache</button>
         </div>

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>SuperX · Browsing history</title>
+    <title>SuperX · Fact-check records</title>
     <link rel="stylesheet" href="history.css">
     <script src="feed-core.js" defer></script>
     <script src="ui-i18n.js" defer></script>
@@ -18,49 +18,48 @@
       <aside class="history-sidebar">
         <div class="brand"><span class="brand-logo" role="img" aria-label="SuperX"></span></div>
         <p class="brand-tagline" data-i18n="options.tagline">Understand X. Fact-check as you scroll.</p>
-        <nav class="section-nav" data-i18n-aria="history.title" aria-label="Browsing history">
+        <nav class="section-nav" data-i18n-aria="history.title" aria-label="Fact-check records">
           <a href="options.html" data-i18n="common.settings">Settings</a>
-          <span aria-current="page" data-i18n="history.title">Browsing history</span>
+          <span aria-current="page" data-i18n="history.title">Fact-check records</span>
         </nav>
       </aside>
       <main class="history-main">
         <header class="page-header">
           <div class="header-row">
-            <h1 data-i18n="history.title">Browsing history</h1>
-            <button id="clear-history" class="secondary-button" type="button" data-i18n="history.clear" disabled>Clear history</button>
+            <h1 data-i18n="history.title">Fact-check records</h1>
+            <button id="clear-history" class="secondary-button" type="button" data-i18n="history.clear" disabled>Clear records</button>
           </div>
           <p id="history-status" role="status" aria-live="polite"></p>
         </header>
         <section class="page-intro">
-          <p class="subtitle" data-i18n="history.subtitle">Posts from the last 24 hours and their saved answers stay on this device, including after browser restart. Repeated posts are merged.</p>
-          <label class="switch-label" for="history-enabled">
-            <span data-i18n="history.recording">Record browsing history</span>
-            <input id="history-enabled" type="checkbox" role="switch" disabled aria-describedby="recording-help">
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <p id="recording-help" class="help" data-i18n="history.recordingHelp">Turning this off stops new records and keeps your existing history. Viewing saved answers does not make API requests.</p>
+          <p class="subtitle" data-i18n="history.subtitle">Every post SuperX has generated a fact check or comment drafts for is kept on this device with all saved answer versions.</p>
+          <div id="usage" class="usage" hidden>
+            <div id="usage-meter" class="usage-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-describedby="usage-text" data-i18n-aria="history.usageLabel" aria-label="Fact-check record storage"><span id="usage-fill" class="usage-fill"></span></div>
+            <p id="usage-text" class="usage-text"></p>
+            <p id="usage-hint" class="help" hidden><span data-i18n="history.usageHint">Over the limit, the least recently used records are deleted.</span> <a href="options.html#maintenance-heading" data-i18n="history.usageSettings">Change the limit</a></p>
+          </div>
         </section>
         <section id="clear-confirmation" class="confirmation" role="group" aria-labelledby="clear-heading" hidden>
-          <h2 id="clear-heading" data-i18n="history.clearConfirm">Clear all browsing history?</h2>
-          <p class="help" data-i18n="history.clearHelp">Saved posts and answers will be deleted from this device. This cannot be undone.</p>
+          <h2 id="clear-heading" data-i18n="history.clearConfirm">Clear all fact-check records?</h2>
+          <p class="help" data-i18n="history.clearHelp">Saved posts, answers and comment drafts on this device will be deleted, including the answer cache. This cannot be undone.</p>
           <div class="confirmation-actions">
             <button id="confirm-clear" class="primary-button" type="button" data-i18n="history.confirmClear">Clear all</button>
             <button id="cancel-clear" class="secondary-button" type="button" data-i18n="history.cancel">Cancel</button>
           </div>
         </section>
         <div class="history-tools">
-          <label class="visually-hidden" for="history-search" data-i18n="history.searchLabel">Search browsing history</label>
-          <input id="history-search" type="search" autocomplete="off" data-i18n-placeholder="history.search" placeholder="Search posts, authors and saved answers">
+          <label class="visually-hidden" for="history-search" data-i18n="history.searchLabel">Search fact-check records</label>
+          <input id="history-search" type="search" autocomplete="off" data-i18n-placeholder="history.search" placeholder="Search posts, authors, answers and comments">
           <button id="refresh-history" class="text-button" type="button" data-i18n="history.refresh">Refresh</button>
-          <p id="history-count" class="help" aria-live="polite"></p>
         </div>
+        <button id="new-records" class="new-records" type="button" hidden></button>
         <div id="history-empty" class="empty-state" hidden>
           <h2 id="empty-title"></h2>
           <p id="empty-help" class="help"></p>
         </div>
-        <section id="history-list" data-i18n-aria="history.title" aria-label="Browsing history" aria-busy="true"></section>
+        <section id="history-list" data-i18n-aria="history.title" aria-label="Fact-check records" aria-busy="true"></section>
         <div id="history-more" class="history-more" hidden>
-          <button id="more-history" class="secondary-button" type="button" data-i18n="history.showMore">Show more</button>
+          <button id="more-history" class="secondary-button" type="button">Show more</button>
         </div>
       </main>
     </div>

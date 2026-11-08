@@ -138,6 +138,11 @@ interface PageElements {
   "answer-cache-limit-help": HTMLElementTagNameMap["p"];
   "cache-heading": HTMLElementTagNameMap["h3"];
   "clear-cache": HTMLElementTagNameMap["button"];
+  "cache-usage": HTMLElementTagNameMap["div"];
+  "cache-usage-meter": HTMLElementTagNameMap["div"];
+  "cache-usage-fill": HTMLElementTagNameMap["span"];
+  "cache-usage-text": HTMLElementTagNameMap["p"];
+  "cache-usage-hint": HTMLElementTagNameMap["p"];
   "export-markdown": HTMLButtonElement;
   "export-jsonl": HTMLButtonElement;
   "export-cancel": HTMLButtonElement;
@@ -194,6 +199,49 @@ interface PageElements {
   let busy = false;
   let exportController: AbortController | null = null;
   let exportStatus = { key: "", vars: {} as Record<string, unknown> };
+  let cacheUsage: {
+      bytes: number;
+      limitBytes: number;
+      records: number;
+    } | null = null,
+    cacheUsageRevision = 0;
+  /** Same meter as the records page, refreshed on load and worker notices. */
+  function renderCacheUsage() {
+    $("cache-usage").hidden = !cacheUsage;
+    if (!cacheUsage) return;
+    const meter = ui.usageMeter(cacheUsage, uiLanguage),
+      bar = $("cache-usage-meter");
+    bar.setAttribute("aria-valuenow", String(meter.percent));
+    bar.setAttribute("aria-valuetext", meter.text);
+    bar.dataset.level = meter.level;
+    $("cache-usage-fill").style.width = meter.percent + "%";
+    $("cache-usage-text").textContent = meter.text;
+    $("cache-usage-hint").hidden = !meter.nearLimit;
+  }
+  async function refreshCacheUsage() {
+    const revision = ++cacheUsageRevision;
+    try {
+      const result = await chrome.runtime.sendMessage<
+        ControlMessage,
+        Reply & { bytes?: unknown; limitBytes?: unknown; records?: unknown }
+      >({ type: "GET_CACHE_USAGE" });
+      if (revision !== cacheUsageRevision) return;
+      const { bytes, limitBytes, records } = result || {};
+      if (
+        result?.ok &&
+        typeof bytes === "number" &&
+        typeof limitBytes === "number" &&
+        typeof records === "number" &&
+        [bytes, limitBytes, records].every(
+          (value) => Number.isFinite(value) && value >= 0,
+        )
+      )
+        cacheUsage = { bytes, limitBytes, records };
+    } catch {
+      /* The meter keeps its last value when the worker is unavailable. */
+    }
+    renderCacheUsage();
+  }
   function renderExport() {
     $("export-markdown").disabled = busy || exportController !== null;
     $("export-jsonl").disabled = busy || exportController !== null;
@@ -1429,6 +1477,7 @@ interface PageElements {
     uiLanguage = ui.resolveLanguage(interfaceLanguage, observedUILanguage);
     renderExport();
     ui.apply(document, uiLanguage);
+    renderCacheUsage();
     // Keep a real, fixed-destination link inside localized plain text. Locale
     // refreshes must neither parse HTML nor reset the user's details toggle.
     const subscriptionName = "The X Subscription",
@@ -2188,6 +2237,7 @@ interface PageElements {
         $("build-command").textContent = "";
       } else await send({ type: "SAVE_SETTINGS", settings });
       currentSettings = settings;
+      void refreshCacheUsage();
       if (saveKey) await refreshSecurity();
       if (strict) for (const id of [...fieldErrors.keys()]) clearFieldError(id);
       if (enabled) {
@@ -2253,6 +2303,7 @@ interface PageElements {
     try {
       await send({ type: "CLEAR_CACHE" });
       setStatus("options.cacheCleared");
+      void refreshCacheUsage();
     } catch (error) {
       setStatus("errors.operation", "error", {
         error: (error as ErrorShape).message,
@@ -2299,6 +2350,7 @@ interface PageElements {
     }
   });
   chrome.runtime.onMessage.addListener((message: ControlMessage) => {
+    if (message?.type === "HISTORY_CHANGED") void refreshCacheUsage();
     if (message?.type === "UI_LANGUAGE_CHANGED") {
       localeRevision++;
       applyLanguage(message.language);
@@ -2395,6 +2447,7 @@ interface PageElements {
   });
   applyLanguage(observedUILanguage);
   load();
+  void refreshCacheUsage();
 })();
 
 export type {};

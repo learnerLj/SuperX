@@ -35,12 +35,12 @@ test('provider panels are siblings and every provider-specific control belongs t
   }
 });
 
-test('browsing history navigation uses a native page link and keeps recording controls only on the history page',()=>{
+test('fact-check records navigation uses a native page link and neither page has a recording switch',()=>{
   const optionsHTML=source('options'),historyHTML=source('history'),options=strictTree(optionsHTML),history=strictTree(historyHTML);
   for(const id of ['history-heading','history-enabled','open-history','history-status'])assert.equal(options.ids.has(id),false,`Removed Settings history control #${id}`);
   const walk=node=>node.children.flatMap(child=>[child,...walk(child)]),optionsLink=walk(options.root).find(node=>node.tag==='a'&&/data-i18n="common\.history"/.test(node.token));
   assert.ok(optionsLink);assert.match(optionsLink.token,/href="history\.html"/);assert.doesNotMatch(optionsLink.token,/\b(?:onclick|target|role)=/,'The ordinary anchor supports same-tab, keyboard and browser new-tab navigation');
-  const historyNav=walk(history.root).find(node=>node.tag==='nav'&&/class="section-nav"/.test(node.token));assert.equal(historyNav.children[0].tag,'a');assert.match(historyNav.children[0].token,/href="options\.html"/);assert.match(historyNav.children[0].token,/common\.settings/);assert.doesNotMatch(historyNav.children[0].token,/aria-current/);assert.equal(historyNav.children[1].tag,'span');assert.match(historyNav.children[1].token,/aria-current="page"/);assert.match(historyNav.children[1].token,/history\.title/);assert.ok(history.ids.has('history-enabled'));assert.equal(history.ids.get('history-enabled').tag,'input');
+  const historyNav=walk(history.root).find(node=>node.tag==='nav'&&/class="section-nav"/.test(node.token));assert.equal(historyNav.children[0].tag,'a');assert.match(historyNav.children[0].token,/href="options\.html"/);assert.match(historyNav.children[0].token,/common\.settings/);assert.doesNotMatch(historyNav.children[0].token,/aria-current/);assert.equal(historyNav.children[1].tag,'span');assert.match(historyNav.children[1].token,/aria-current="page"/);assert.match(historyNav.children[1].token,/history\.title/);assert.equal(history.ids.has('history-enabled'),false,'Records have no recording switch');assert.equal(history.ids.get('usage-meter').tag,'div');assert.ok(ancestor(options.ids.get('cache-usage-meter'),options.ids.get('maintenance')),'The Settings meter sits in the cache section');
 });
 
 test('a premature provider closing tag fails the structural check instead of relying on browser repair',()=>{
