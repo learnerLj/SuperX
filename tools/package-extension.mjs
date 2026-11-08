@@ -10,7 +10,7 @@ export const PRODUCTION_FILES = Object.freeze([
   'cache-export.js', 'zip-LICENSE.txt', 'answer-cache.js', 'api-provider.js', 'native-provider.js', 'native-panel.js', 'native-protocol.js', 'native-api-bridge.js',
   'assets/icon-128.png', 'assets/icon-16.png', 'assets/icon-32.png', 'assets/icon-48.png',
   'assets/superx-logo.svg', 'assets/superx-symbol.svg',
-  'background.js', 'build-acp.js', 'build-transport.js', 'build-provider.js', 'build-setup.js', 'content.js', 'draft-composer.js', 'feed-core.js', 'feed-scheduler.js', 'provider-registry.js', 'history-store.js', 'history.css', 'history.html', 'history.js', 'key-store.js', 'LICENSE.txt', 'manifest.json',
+  'background.js', 'build-acp.js', 'build-transport.js', 'build-provider.js', 'build-setup.js', 'content.js', 'draft-composer.js', 'feed-core.js', 'feed-scheduler.js', 'provider-registry.js', 'history.css', 'history.html', 'history.js', 'key-store.js', 'LICENSE.txt', 'manifest.json',
   'math-renderer.js', 'katex-LICENSE.txt', 'markdown-renderer.js', 'marked-cjk-friendly.umd.js', 'marked-cjk-friendly-LICENSE.txt', 'marked-LICENSE.txt', 'marked.umd.js',
   'oauth-provider.js', 'options.css', 'options.html', 'options.js', 'overlay-layout.js',
   'popup.css', 'popup.html', 'popup.js', 'privacy.html', 'setup.css', 'setup.html', 'setup.js', 'ui-i18n.js',

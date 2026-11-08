@@ -14,7 +14,6 @@ import type {
   RequestDiagnostics,
   ProviderDiagnostics,
 } from "../shared/contracts";
-import type { Ticket } from "./history-store";
 export type {
   Post,
   Settings,
@@ -66,6 +65,8 @@ export interface WorkerMessage {
   batchId?: unknown;
   posts?: unknown;
   historyEpoch?: unknown;
+  after?: unknown;
+  query?: unknown;
   enabled?: unknown;
   width?: unknown;
   collapsed?: unknown;
@@ -144,12 +145,6 @@ export interface Subscription {
   force: boolean;
   prefetch: boolean;
 }
-export interface HistoryCapture {
-  ticket: Ticket | null;
-  scope: string;
-  revision: number;
-}
-export type HistoryTicket = Promise<HistoryCapture | null> | null;
 export interface Job {
   key: string | symbol;
   requestId: string;
@@ -166,8 +161,8 @@ export interface Job {
   settings: Settings;
   revision: number;
   fingerprint: string | null;
-  historyTicket: HistoryTicket;
-  historyLanguage: string;
+  /** Resolved post language saved with comment drafts on the record. */
+  recordLanguage: string;
   started: boolean;
   retryAttempts: number;
   completedBilling: Metadata[];

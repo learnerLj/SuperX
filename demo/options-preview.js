@@ -75,8 +75,7 @@
           return {ok:true};
         }
         if(message.type==='CLEAR_CACHE')return {ok:true};
-        if(message.type==='GET_HISTORY_STATUS')return {ok:true,enabled:state.superxHistoryEnabled!==false,count:0};
-        if(message.type==='SET_HISTORY_ENABLED'){const previous=state.superxHistoryEnabled;state.superxHistoryEnabled=message.enabled;for(const listener of storageListeners)listener({superxHistoryEnabled:{oldValue:previous,newValue:message.enabled}},'local');return {ok:true,enabled:message.enabled};}
+        if(message.type==='GET_CACHE_USAGE'){const limitBytes=state.settings.answerCacheLimitMB*1024*1024,level=Number(new URLSearchParams(location.search).get('usage')||35);return {ok:true,epoch:0,bytes:Math.round(limitBytes*level/100),limitBytes,records:1234,answers:1300};}
         if(message.type==='OPEN_HISTORY'){location.assign('/demo/history.html?lang='+encodeURIComponent(state.uiLanguage));return {ok:true};}
         if(message.type==='SAVE_KEY'){
           if(typeof message.remember==='boolean')state.rememberApiKey=message.remember;

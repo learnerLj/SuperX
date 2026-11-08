@@ -19,7 +19,6 @@ const script = (source, output) => ({
 export const GENERATED_ENTRIES = Object.freeze([
   script("background/worker", "background"),
   script("shared/feed-core", "feed-core"),
-  script("background/history-store", "history-store"),
   script("background/key-store", "key-store"),
   script("providers/api-provider", "api-provider"),
   script("providers/build-acp", "build-acp"),

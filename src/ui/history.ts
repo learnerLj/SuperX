@@ -1,53 +1,85 @@
 import type { Usage } from "../shared/contracts";
 import type { ControlMessage, Reply } from "./state-types";
-interface RawEntry {
+interface RawAnswer {
+  index?: unknown;
+  provider?: unknown;
+  account?: unknown;
+  model?: unknown;
+  completedAt?: unknown;
+  text?: unknown;
+  sources?: { url?: unknown; title?: unknown }[];
+  verificationStatus?: unknown;
+  verificationStart?: unknown;
+  usage?: Usage;
+  usageComplete?: unknown;
+}
+interface RawRecord {
   id?: unknown;
   url?: unknown;
+  hasSnapshot?: unknown;
   author?: unknown;
   text?: unknown;
-  lastViewedAt: number;
+  activityAt?: unknown;
+  preferred?: unknown;
+  answers?: RawAnswer[];
   comments?: unknown[];
-  analysis?: {
-    text?: unknown;
-    sources?: { url?: unknown; title?: unknown }[];
-    verificationStatus?: unknown;
-    verificationStart?: number;
-    model?: unknown;
-    usage?: Usage;
-    usageComplete?: unknown;
-  };
 }
-interface Analysis {
+interface Answer {
+  index: number;
+  provider: string;
+  account: string;
+  model: string;
+  completedAt: number;
   text: string;
   sources: { url: string; title: string }[];
   verificationStatus: string;
   verificationStart?: number;
-  model: string;
   usage?: Usage;
   usageComplete: boolean;
 }
-interface HistoryEntry {
+interface PostRecordView {
   id: string;
   url: string;
+  hasSnapshot: boolean;
   author: string;
   text: string;
-  lastViewedAt: number;
-  analysis: Analysis | null;
+  activityAt: number;
+  preferred: number;
+  answers: Answer[];
   comments: string[];
+}
+type Cursor = [number, string];
+interface RecordsReply extends Reply {
+  epoch: number;
+  records: RawRecord[];
+  next: unknown;
+}
+interface UsageReply extends Reply {
+  epoch: number;
+  limitBytes: number;
+  bytes: number;
+  records: number;
+}
+interface StorageUsage {
+  limitBytes: number;
+  bytes: number;
+  records: number;
 }
 export type API = ReturnType<typeof historyFactory>;
 interface PageElements {
   "clear-history": HTMLElementTagNameMap["button"];
   "history-status": HTMLElementTagNameMap["p"];
-  "history-enabled": HTMLElementTagNameMap["input"];
-  "recording-help": HTMLElementTagNameMap["p"];
+  usage: HTMLElementTagNameMap["div"];
+  "usage-meter": HTMLElementTagNameMap["div"];
+  "usage-fill": HTMLElementTagNameMap["span"];
+  "usage-text": HTMLElementTagNameMap["p"];
+  "usage-hint": HTMLElementTagNameMap["p"];
   "clear-confirmation": HTMLElementTagNameMap["section"];
-  "clear-heading": HTMLElementTagNameMap["h2"];
   "confirm-clear": HTMLElementTagNameMap["button"];
   "cancel-clear": HTMLElementTagNameMap["button"];
   "history-search": HTMLElementTagNameMap["input"];
   "refresh-history": HTMLElementTagNameMap["button"];
-  "history-count": HTMLElementTagNameMap["p"];
+  "new-records": HTMLElementTagNameMap["button"];
   "history-empty": HTMLElementTagNameMap["div"];
   "empty-title": HTMLElementTagNameMap["h2"];
   "empty-help": HTMLElementTagNameMap["p"];
@@ -71,10 +103,14 @@ interface PageElements {
 })(globalThis, historyFactory);
 function historyFactory(Core: typeof XGrokCore) {
   "use strict";
-  const TTL = 24 * 60 * 60 * 1000;
-  const PAGE_SIZE = 100;
-  const searchIndexes = new WeakMap<HistoryEntry, string>(),
-    displaySignatures = new WeakMap<HistoryEntry, string>();
+  const SEARCH_DELAY = 300;
+  const PROVIDER_LABELS: Record<string, string> = {
+    api: "options.providerAPI",
+    oauth: "options.providerOAuth",
+    build: "options.providerBuild",
+    "x-native": "native.label",
+  };
+  const signatures = new WeakMap<PostRecordView, string>();
   function safePostUrl(value: unknown) {
     if (typeof value !== "string" || value.length > 2048) return null;
     try {
@@ -122,134 +158,119 @@ function historyFactory(Core: typeof XGrokCore) {
         usage[key] = value[key];
     return Object.keys(usage).length ? usage : undefined;
   }
-  function searchIndex(entry: HistoryEntry) {
-    if (!searchIndexes.has(entry))
-      searchIndexes.set(
-        entry,
-        [
-          entry.text,
-          entry.author,
-          entry.url,
-          entry.analysis?.text,
-          ...(entry.comments || []),
-        ]
-          .join("\n")
-          .toLocaleLowerCase(),
-      );
-    return searchIndexes.get(entry)!;
+  function cursor(value: unknown): Cursor | null {
+    return Array.isArray(value) &&
+      value.length === 2 &&
+      Number.isFinite(value[0]) &&
+      typeof value[1] === "string" &&
+      /^\d{1,25}$/.test(value[1])
+      ? [value[0] as number, value[1]]
+      : null;
   }
-  function displaySignature(entry: HistoryEntry) {
-    if (!displaySignatures.has(entry)) {
-      const analysis = entry.analysis;
-      displaySignatures.set(
-        entry,
+  function normalizeAnswer(value: RawAnswer, position: number): Answer {
+    const answer: Answer = {
+      index: Number.isSafeInteger(value?.index)
+        ? (value.index as number)
+        : position,
+      provider: boundedText(value?.provider, 20),
+      account: boundedText(value?.account, 80),
+      model: boundedText(value?.model, 160),
+      completedAt: Number.isFinite(value?.completedAt)
+        ? (value.completedAt as number)
+        : 0,
+      text: boundedText(value?.text, 30000),
+      sources: Array.isArray(value?.sources)
+        ? value.sources.slice(0, 30).flatMap((source) => {
+            const url = safeSourceUrl(source?.url);
+            return url ? [{ url, title: boundedText(source.title, 300) }] : [];
+          })
+        : [],
+      verificationStatus: boundedText(value?.verificationStatus, 40),
+      verificationStart: Number.isSafeInteger(value?.verificationStart)
+        ? (value.verificationStart as number)
+        : undefined,
+      usage: safeUsage(value?.usage),
+      usageComplete: value?.usageComplete === true,
+    };
+    // Old cached tool-only answers stay hidden rather than shown as evidence.
+    const output = Core.readerOutput(answer.text, { final: true });
+    answer.text = output.text;
+    if (output.kind !== "content") {
+      answer.sources = [];
+      answer.verificationStart = undefined;
+      answer.verificationStatus = "incomplete";
+    }
+    return answer;
+  }
+  /** Untrusted worker DTOs are bounded and links re-validated before render. */
+  function normalizeRecords(input: unknown): PostRecordView[] {
+    const seen = new Set<string>();
+    return (Array.isArray(input) ? (input as RawRecord[]) : []).flatMap(
+      (value) => {
+        const id = boundedText(value?.id, 25),
+          url = safePostUrl(value?.url);
+        if (
+          !/^\d{1,25}$/.test(id) ||
+          !url ||
+          seen.has(id) ||
+          !Number.isFinite(value?.activityAt)
+        )
+          return [];
+        seen.add(id);
+        const answers = Array.isArray(value.answers)
+          ? value.answers.slice(0, 100).map(normalizeAnswer)
+          : [];
+        return [
+          {
+            id,
+            url,
+            hasSnapshot: value.hasSnapshot === true,
+            author: boundedText(value.author, 300),
+            text: boundedText(value.text, 12000),
+            activityAt: value.activityAt as number,
+            preferred: Number.isSafeInteger(value.preferred)
+              ? (value.preferred as number)
+              : 0,
+            answers,
+            comments: Array.isArray(value.comments)
+              ? value.comments
+                  .slice(0, 3)
+                  .map((comment) => boundedText(comment, 2000))
+                  .filter(Boolean)
+              : [],
+          },
+        ];
+      },
+    );
+  }
+  function signature(record: PostRecordView) {
+    if (!signatures.has(record))
+      signatures.set(
+        record,
         JSON.stringify([
-          entry.author,
-          entry.url,
-          entry.text,
-          entry.comments,
-          analysis && [
-            analysis.text,
-            analysis.sources,
-            analysis.verificationStatus,
-            analysis.verificationStart,
-            analysis.model,
-            analysis.usageComplete,
-            analysis.usage?.total_tokens,
-            analysis.usage?.input_tokens,
-            analysis.usage?.output_tokens,
-          ],
+          record.author,
+          record.url,
+          record.text,
+          record.hasSnapshot,
+          record.comments,
+          record.answers.map((answer) => [
+            answer.index,
+            answer.provider,
+            answer.account,
+            answer.model,
+            answer.completedAt,
+            answer.text,
+            answer.sources,
+            answer.verificationStatus,
+            answer.verificationStart,
+            answer.usageComplete,
+            answer.usage?.total_tokens,
+            answer.usage?.input_tokens,
+            answer.usage?.output_tokens,
+          ]),
         ]),
       );
-    }
-    return displaySignatures.get(entry)!;
-  }
-  function filterEntries(
-    entries: HistoryEntry[],
-    query: string,
-    now: number,
-    ttl = TTL,
-  ) {
-    const needle = String(query || "")
-      .trim()
-      .toLocaleLowerCase();
-    return entries
-      .filter(
-        (entry: HistoryEntry) =>
-          Number.isFinite(entry.lastViewedAt) &&
-          entry.lastViewedAt > now - ttl &&
-          entry.lastViewedAt <= now + 60000,
-      )
-      .filter(
-        (entry: HistoryEntry) => !needle || searchIndex(entry).includes(needle),
-      )
-      .sort((a, b) => b.lastViewedAt - a.lastViewedAt);
-  }
-  function normalizeEntries(entries: RawEntry[]): HistoryEntry[] {
-    const seen = new Set();
-    return entries.slice(0, 1000).flatMap((value) => {
-      const id = boundedText(value?.id, 128),
-        url = safePostUrl(value?.url);
-      if (!id || !url || seen.has(id) || !Number.isFinite(value?.lastViewedAt))
-        return [];
-      seen.add(id);
-      const analysis: Analysis | null =
-        value.analysis && typeof value.analysis === "object"
-          ? {
-              text: boundedText(value.analysis.text, 30000),
-              sources: Array.isArray(value.analysis.sources)
-                ? value.analysis.sources.slice(0, 30).flatMap((source) => {
-                    const sourceUrl = safeSourceUrl(source?.url);
-                    return sourceUrl
-                      ? [
-                          {
-                            url: sourceUrl,
-                            title: boundedText(source.title, 300),
-                          },
-                        ]
-                      : [];
-                  })
-                : [],
-              verificationStatus: boundedText(
-                value.analysis.verificationStatus,
-                40,
-              ),
-              verificationStart: Number.isSafeInteger(
-                value.analysis.verificationStart,
-              )
-                ? value.analysis.verificationStart
-                : undefined,
-              model: boundedText(value.analysis.model, 160),
-              usage: safeUsage(value.analysis.usage),
-              usageComplete: value.analysis.usageComplete === true,
-            }
-          : null;
-      if (analysis) {
-        const output = Core.readerOutput(analysis.text, { final: true });
-        analysis.text = output.text;
-        if (output.kind !== "content") {
-          analysis.sources = [];
-          analysis.verificationStart = undefined;
-          analysis.verificationStatus = "incomplete";
-        }
-      }
-      return [
-        {
-          id,
-          url,
-          author: boundedText(value.author, 300),
-          text: boundedText(value.text, 12000),
-          lastViewedAt: value.lastViewedAt,
-          analysis,
-          comments: Array.isArray(value.comments)
-            ? value.comments
-                .slice(0, 3)
-                .map((comment) => boundedText(comment, 2000))
-                .filter(Boolean)
-            : [],
-        },
-      ];
-    });
+    return signatures.get(record)!;
   }
   function create({
     environment = globalThis,
@@ -258,7 +279,6 @@ function historyFactory(Core: typeof XGrokCore) {
     core = environment.XGrokCore,
     ui = environment.GrokFirstUI,
     markdown = environment.GrokFirstMarkdown,
-    now = () => Date.now(),
   }: {
     environment?: typeof globalThis;
     document?: Document;
@@ -266,33 +286,36 @@ function historyFactory(Core: typeof XGrokCore) {
     core?: typeof XGrokCore;
     ui?: typeof GrokFirstUI;
     markdown?: typeof GrokFirstMarkdown;
-    now?: () => number;
   } = {}) {
     function $<K extends keyof PageElements>(id: K): PageElements[K];
     function $(id: string): HTMLElement;
     function $(id: string) {
       return document.getElementById(id)!;
     }
-    let entries: HistoryEntry[] = [],
-      enabled = true,
-      ttl = TTL,
+    let records: PostRecordView[] = [],
+      next: Cursor | null = null,
+      epoch = 0,
+      activeQuery = "",
+      usage: StorageUsage | null = null,
+      // Record count when the list was last loaded; growth is announced
+      // instead of reordering the list under the reader.
+      baseline: number | null = null,
+      newCount = 0,
       loaded = false,
       loading = false,
       busy = false,
       requestRevision = 0,
+      usageRevision = 0,
       localeRevision = 0,
       settingsRevision = 0;
     let settings = core.normalizeSettings(core.DEFAULT_SETTINGS),
       automaticLanguage = ui.browserLanguage(environment),
       language = automaticLanguage;
     let status: { key: string; error: boolean } | null = null,
-      expiryTimer: number | null = null,
-      notificationTimer: number | null = null,
+      searchTimer: number | null = null,
       refreshQueued = false,
-      visibleLimit = PAGE_SIZE,
       listRenderPending = false;
     interface Labels {
-      entry: HistoryEntry;
       copyButtons: HTMLButtonElement[];
       tokens?: HTMLElement;
       model?: HTMLElement;
@@ -302,10 +325,13 @@ function historyFactory(Core: typeof XGrokCore) {
     interface Row {
       node: HTMLElement;
       signature: string;
-      entry: HistoryEntry;
+      record: PostRecordView;
+      answer: Answer | null;
       time: HTMLTimeElement;
       open: HTMLAnchorElement;
       remove: HTMLButtonElement;
+      noSnapshot?: HTMLElement;
+      version?: HTMLSelectElement;
       details?: HTMLDetailsElement;
       summary?: HTMLElement;
       body?: HTMLElement;
@@ -313,6 +339,7 @@ function historyFactory(Core: typeof XGrokCore) {
       noAnalysis?: HTMLElement;
     }
     const expanded = new Set<string>(),
+      selected = new Map<string, number>(),
       rows = new Map<string, Row>(),
       timeFormatters = new Map<string, Intl.DateTimeFormat>(),
       numberFormatters = new Map<string, Intl.NumberFormat>();
@@ -334,6 +361,9 @@ function historyFactory(Core: typeof XGrokCore) {
       node.target = "_blank";
       node.rel = "noopener noreferrer";
       return node;
+    }
+    async function request<T extends Reply>(message: ControlMessage) {
+      return chrome.runtime.sendMessage<ControlMessage, T>(message);
     }
     function setStatus(key: string | null, error = false) {
       status = key ? { key, error } : null;
@@ -383,33 +413,57 @@ function historyFactory(Core: typeof XGrokCore) {
         return String(value);
       }
     }
-    function renderAnswer(target: HTMLElement, entry: HistoryEntry) {
+    /** The chosen version, else the worker's best match for the settings. */
+    function currentAnswer(record: PostRecordView) {
+      const index = selected.get(record.id) ?? record.preferred;
+      return (
+        record.answers.find((answer) => answer.index === index) ||
+        record.answers[0] ||
+        null
+      );
+    }
+    function versionLabel(answer: Answer) {
+      return [
+        PROVIDER_LABELS[answer.provider]
+          ? t(PROVIDER_LABELS[answer.provider]!)
+          : answer.provider,
+        answer.model,
+        answer.account,
+        answer.completedAt ? formatTime(answer.completedAt) : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    }
+    function renderAnswer(
+      target: HTMLElement,
+      answer: Answer | null,
+      comments: string[],
+    ) {
       target.replaceChildren();
-      const analysis = entry.analysis;
-      const labels: Labels = { entry, copyButtons: [] };
-      if (analysis?.text) {
+      const labels: Labels = { copyButtons: [] };
+      if (answer?.text) {
         const metadata = element("p", "answer-meta");
-        const tokens = totalTokens(analysis!.usage);
+        const tokens = totalTokens(answer.usage);
         if (tokens !== null) {
           labels.tokens = element(
             "span",
             "",
             t("history.tokens", {
-              count: number(tokens) + (analysis!.usageComplete ? "" : "+"),
+              count: number(tokens) + (answer.usageComplete ? "" : "+"),
             }),
           );
           metadata.append(labels.tokens);
         }
-        if (analysis.model) {
+        if (answer.model) {
           labels.model = element(
             "span",
             "",
-            t("history.model", { model: analysis!.model }),
+            t("history.model", { model: answer.model }),
           );
           metadata.append(labels.model);
         }
         if (metadata.childNodes.length) target.append(metadata);
-        if (["incomplete", "failed"].includes(analysis.verificationStatus)) {
+        if (["incomplete", "failed"].includes(answer.verificationStatus)) {
           labels.warning = element(
             "p",
             "answer-warning",
@@ -417,26 +471,25 @@ function historyFactory(Core: typeof XGrokCore) {
           );
           target.append(labels.warning);
         }
-        const boundary = analysis.verificationStart!;
+        const boundary = answer.verificationStart!;
         const explanation = element("div", "answer-markdown");
         if (
           Number.isInteger(boundary) &&
           boundary > 0 &&
-          boundary < analysis.text.length
+          boundary < answer.text.length
         ) {
-          markdown.render(explanation, analysis.text.slice(0, boundary));
+          markdown.render(explanation, answer.text.slice(0, boundary));
           target.append(explanation);
-          const separator = element("hr", "fact-check-divider");
-          target.append(separator);
+          target.append(element("hr", "fact-check-divider"));
           const factCheck = element("div", "answer-markdown");
-          markdown.render(factCheck, analysis.text.slice(boundary));
+          markdown.render(factCheck, answer.text.slice(boundary));
           target.append(factCheck);
         } else {
-          markdown.render(explanation, analysis.text);
+          markdown.render(explanation, answer.text);
           target.append(explanation);
         }
-        const unused = analysis.sources.filter(
-          (source) => !analysis.text.includes(source.url),
+        const unused = answer.sources.filter(
+          (source) => !answer.text.includes(source.url),
         );
         if (unused.length) {
           const sources = element("div", "answer-sources");
@@ -452,14 +505,14 @@ function historyFactory(Core: typeof XGrokCore) {
           target.append(sources);
         }
       }
-      if (entry.comments.length) {
+      if (comments.length) {
         labels.commentsHeading = element(
           "h3",
           "comments-heading",
           t("history.comments"),
         );
         target.append(labels.commentsHeading);
-        for (const comment of entry.comments) {
+        for (const comment of comments) {
           const button = element("button", "comment-copy", comment);
           button.type = "button";
           button.title = t("history.copy");
@@ -480,75 +533,91 @@ function historyFactory(Core: typeof XGrokCore) {
       }
       return labels;
     }
-    function buildRow(entry: HistoryEntry) {
+    function noAnalysisKey(answer: Answer | null) {
+      return ["incomplete", "failed"].includes(answer?.verificationStatus!)
+        ? "status.incomplete"
+        : "history.noAnalysis";
+    }
+    function buildRow(record: PostRecordView, rowSignature: string) {
       const article = element("article", "history-entry");
-      article.dataset.entryId = entry.id;
+      article.dataset.entryId = record.id;
+      const answer = currentAnswer(record);
       const row = {
         node: article,
-        signature: displaySignature(entry),
-        entry,
+        signature: rowSignature,
+        record,
+        answer,
       } as Row;
       const header = element("div", "entry-header");
-      const author = element(
-        "span",
-        "entry-author",
-        entry.author || new URL(entry.url).pathname.split("/")[1],
+      header.append(
+        element(
+          "span",
+          "entry-author",
+          record.author || new URL(record.url).pathname.split("/")[1],
+        ),
       );
-      header.append(author);
-      const time = element("time", "entry-time");
-      row.time = time;
-      header.append(time);
+      row.time = element("time", "entry-time");
+      header.append(row.time);
       article.append(header);
-      if (entry.text) article.append(element("p", "entry-text", entry.text));
+      if (record.text) article.append(element("p", "entry-text", record.text));
+      else if (!record.hasSnapshot) {
+        row.noSnapshot = element("p", "help entry-missing");
+        article.append(row.noSnapshot);
+      }
+      if (record.answers.length > 1) {
+        const version = element("select", "version-select");
+        for (const item of record.answers) {
+          const option = element("option");
+          option.value = String(item.index);
+          version.append(option);
+        }
+        version.value = String(answer?.index ?? "");
+        version.addEventListener("change", () => {
+          if (rows.get(record.id) !== row) return;
+          selected.set(record.id, Number(version.value));
+          render({ forceList: true });
+        });
+        row.version = version;
+        article.append(version);
+      }
       const actions = element("div", "entry-actions");
-      row.open = link(entry.url, t("history.open"));
+      row.open = link(record.url, t("history.open"));
       actions.append(row.open);
       const remove = element("button", "text-button", t("history.delete"));
       remove.type = "button";
-      remove.disabled = busy;
       remove.dataset.action = "delete";
       row.remove = remove;
-      remove.setAttribute(
-        "aria-label",
-        t("history.delete") + " · " + (entry.author || entry.id),
-      );
       remove.addEventListener("click", () =>
         mutate(
-          { type: "DELETE_HISTORY", id: entry.id },
+          { type: "DELETE_HISTORY", id: record.id },
           "history.deleted",
           "history.deleteError",
         ),
       );
       actions.append(remove);
       article.append(actions);
-      if (entry.analysis?.text || entry.comments.length) {
+      if (answer?.text || record.comments.length) {
         const details = element("details", "answer-details"),
-          summary = element(
-            "summary",
-            "",
-            t(
-              expanded.has(entry.id)
-                ? "history.hideAnswer"
-                : "history.showAnswer",
-            ),
-          ),
+          summary = element("summary"),
           body = element("div", "answer-body");
         row.details = details;
         row.summary = summary;
         row.body = body;
-        details.open = expanded.has(entry.id);
+        details.open = expanded.has(record.id);
         details.append(summary, body);
-        if (details.open) row.answerLabels = renderAnswer(body, entry);
+        if (details.open)
+          row.answerLabels = renderAnswer(body, answer, record.comments);
         details.addEventListener("toggle", () => {
           // A toggle is queued by the browser, including when restoring an
           // open details element. Ignore a removed row and do not rebuild an
           // already rendered answer: selection and copy focus stay intact.
-          if (rows.get(entry.id) !== row) return;
+          if (rows.get(record.id) !== row) return;
           if (details.open) {
-            expanded.add(entry.id);
-            if (!row.answerLabels) row.answerLabels = renderAnswer(body, entry);
+            expanded.add(record.id);
+            if (!row.answerLabels)
+              row.answerLabels = renderAnswer(body, answer, record.comments);
           } else {
-            expanded.delete(entry.id);
+            expanded.delete(record.id);
             body.replaceChildren();
             row.answerLabels = null;
           }
@@ -558,62 +627,50 @@ function historyFactory(Core: typeof XGrokCore) {
         });
         article.append(details);
       } else {
-        row.noAnalysis = element(
-          "p",
-          "help",
-          t(
-            ["incomplete", "failed"].includes(
-              entry.analysis?.verificationStatus!,
-            )
-              ? "status.incomplete"
-              : "history.noAnalysis",
-          ),
-        );
+        row.noAnalysis = element("p", "help");
         article.append(row.noAnalysis);
       }
       return row;
     }
-    function updateRow(row: Row, entry: HistoryEntry) {
-      row.entry = entry;
-      setText(row.time, formatTime(entry.lastViewedAt));
-      row.time.dateTime = new Date(entry.lastViewedAt).toISOString();
-      row.time.title = t("history.lastViewed");
+    function updateRow(row: Row) {
+      const { record, answer } = row;
+      setText(row.time, formatTime(record.activityAt));
+      row.time.dateTime = new Date(record.activityAt).toISOString();
+      row.time.title = t("history.activity");
       setText(row.open, t("history.open"));
       setText(row.remove, t("history.delete"));
       row.remove.disabled = busy;
       row.remove.setAttribute(
         "aria-label",
-        t("history.delete") + " · " + (entry.author || entry.id),
+        t("history.delete") + " · " + (record.author || record.id),
       );
-      if (row.noAnalysis)
-        setText(
-          row.noAnalysis,
-          t(
-            ["incomplete", "failed"].includes(
-              entry.analysis?.verificationStatus!,
-            )
-              ? "status.incomplete"
-              : "history.noAnalysis",
-          ),
+      if (row.noSnapshot) setText(row.noSnapshot, t("history.noSnapshot"));
+      if (row.version) {
+        row.version.setAttribute("aria-label", t("history.version"));
+        row.version.title = t("history.version");
+        row.version.disabled = busy;
+        [...row.version.childNodes].forEach((option, index) =>
+          setText(option as HTMLElement, versionLabel(record.answers[index]!)),
         );
+      }
+      if (row.noAnalysis) setText(row.noAnalysis, t(noAnalysisKey(answer)));
       if (row.summary)
         setText(
           row.summary,
           t(row.details!.open ? "history.hideAnswer" : "history.showAnswer"),
         );
-      const labels = row.answerLabels,
-        analysis = entry.analysis;
+      const labels = row.answerLabels;
       if (labels?.tokens)
         setText(
           labels.tokens,
           t("history.tokens", {
             count:
-              number(totalTokens(analysis!.usage)) +
-              (analysis!.usageComplete ? "" : "+"),
+              number(totalTokens(answer!.usage)) +
+              (answer!.usageComplete ? "" : "+"),
           }),
         );
       if (labels?.model)
-        setText(labels.model, t("history.model", { model: analysis!.model }));
+        setText(labels.model, t("history.model", { model: answer!.model }));
       if (labels?.warning) setText(labels.warning, t("history.previousAnswer"));
       if (labels?.commentsHeading)
         setText(labels.commentsHeading, t("history.comments"));
@@ -629,31 +686,30 @@ function historyFactory(Core: typeof XGrokCore) {
           $("history-list").contains?.(selection.focusNode)),
       );
     }
-    function renderList(shown: HistoryEntry[], force: boolean) {
-      // Incoming completed answers may replace content. Let readers finish
-      // selecting/copying their current text before applying passive updates.
+    function renderList(force: boolean) {
+      // A passive reload may replace content. Let readers finish
+      // selecting/copying their current text before applying it.
       if (!force && listHasSelection()) {
         listRenderPending = true;
         return;
       }
       listRenderPending = false;
-      const liveIds = new Set(
-        filterEntries(entries, "", now(), ttl).map(
-          (entry: HistoryEntry) => entry.id,
-        ),
-      );
+      const liveIds = new Set(records.map((record) => record.id));
       for (const [id] of rows)
         if (!liveIds.has(id)) {
           rows.delete(id);
           expanded.delete(id);
+          selected.delete(id);
         }
-      const nodes = shown.slice(0, visibleLimit).map((entry: HistoryEntry) => {
-        let row = rows.get(entry.id);
-        if (!row || row.signature !== displaySignature(entry)) {
-          row = buildRow(entry);
-          rows.set(entry.id, row);
+      const nodes = records.map((record) => {
+        const rowSignature =
+          signature(record) + "#" + (selected.get(record.id) ?? "");
+        let row = rows.get(record.id);
+        if (!row || row.signature !== rowSignature) {
+          row = buildRow(record, rowSignature);
+          rows.set(record.id, row);
         }
-        updateRow(row, entry);
+        updateRow(row);
         return row.node;
       });
       const list = $("history-list"),
@@ -672,98 +728,103 @@ function historyFactory(Core: typeof XGrokCore) {
           : "";
       $("history-status").dataset.state = status?.error ? "error" : "success";
     }
+    function renderUsage() {
+      $("usage").hidden = !usage;
+      if (!usage) return;
+      const meter = ui.usageMeter(usage, language),
+        bar = $("usage-meter");
+      bar.setAttribute("aria-valuenow", String(meter.percent));
+      bar.setAttribute("aria-valuetext", meter.text);
+      bar.dataset.level = meter.level;
+      $("usage-fill").style.width = meter.percent + "%";
+      setText($("usage-text"), meter.text);
+      $("usage-hint").hidden = !meter.nearLimit;
+    }
     function render({ forceList = false } = {}) {
       ui.apply(document, language);
       document.title = "SuperX · " + t("history.title");
       renderStatus();
-      $("history-enabled").checked = enabled;
-      $("history-enabled").disabled = busy || !loaded;
+      renderUsage();
       $("refresh-history").disabled = busy || loading;
-      const available = filterEntries(entries, "", now(), ttl),
-        query = $("history-search").value,
-        shown = query.trim()
-          ? filterEntries(entries, query, now(), ttl)
-          : available;
-      $("clear-history").disabled = busy || !loaded || !available.length;
+      $("clear-history").disabled =
+        busy || !loaded || !(records.length || usage?.records);
       $("confirm-clear").disabled = busy;
       $("cancel-clear").disabled = busy;
       $("history-list").setAttribute("aria-busy", String(loading || busy));
-      $("history-count").textContent = loaded
-        ? t("history.count", { count: number(shown.length) })
-        : "";
-      $("history-empty").hidden = !loaded || Boolean(shown.length);
-      $("empty-title").textContent = t(
-        available.length ? "history.noMatches" : "history.empty",
+      $("new-records").hidden = !loaded || newCount <= 0;
+      $("new-records").disabled = busy || loading;
+      setText(
+        $("new-records"),
+        t("history.newRecords", { count: number(newCount) }),
       );
-      $("empty-help").textContent = available.length
-        ? ""
-        : t("history.emptyHelp");
-      $("history-more").hidden = shown.length <= visibleLimit;
+      $("history-empty").hidden = !loaded || Boolean(records.length || next);
+      $("empty-title").textContent = t(
+        activeQuery ? "history.noMatches" : "history.empty",
+      );
+      $("empty-help").textContent = activeQuery ? "" : t("history.emptyHelp");
+      $("history-more").hidden = !loaded || !next;
       $("more-history").disabled = busy || loading;
-      renderList(shown, forceList);
-      scheduleExpiry();
+      setText(
+        $("more-history"),
+        t(activeQuery ? "history.searchMore" : "history.showMore"),
+      );
+      renderList(forceList);
     }
-    function scheduleExpiry() {
-      if (expiryTimer !== null) environment.clearTimeout?.(expiryTimer);
-      if (!environment.setTimeout || !loaded) return;
-      const soonest = entries
-        .filter((entry: HistoryEntry) => entry.lastViewedAt > now() - ttl)
-        .reduce(
-          (value, entry: HistoryEntry) =>
-            Math.min(value, entry.lastViewedAt + ttl),
-          Infinity,
-        );
-      if (Number.isFinite(soonest))
-        expiryTimer = environment.setTimeout(
-          () => {
-            expiryTimer = null;
-            if (soonest <= now()) render({ forceList: true });
-            else scheduleExpiry();
-          },
-          Math.max(1, Math.min(soonest - now() + 1, 60000)),
-        );
-    }
-    function accept(
-      result: Reply & {
-        entries: RawEntry[];
-        enabled: boolean;
-        limits?: { ttlMs: number };
-      },
-    ) {
+    function validPage(result: RecordsReply) {
       if (
         !result?.ok ||
-        !Array.isArray(result.entries) ||
-        typeof result.enabled !== "boolean"
+        !Array.isArray(result.records) ||
+        !Number.isSafeInteger(result.epoch)
       )
-        throw new Error("History response unavailable");
-      entries = normalizeEntries(result.entries);
-      enabled = result.enabled;
-      ttl =
-        Number.isFinite(result.limits?.ttlMs) && result.limits!.ttlMs > 0
-          ? Math.min(result.limits!.ttlMs, TTL)
-          : TTL;
-      loaded = true;
+        throw new Error("Records unavailable");
+      return result;
     }
+    function acceptUsage(result: UsageReply | null) {
+      if (
+        !result?.ok ||
+        !Number.isSafeInteger(result.epoch) ||
+        ![result.bytes, result.limitBytes, result.records].every(
+          (value) => Number.isFinite(value) && value >= 0,
+        )
+      )
+        return null;
+      usage = {
+        bytes: result.bytes,
+        limitBytes: result.limitBytes,
+        records: result.records,
+      };
+      return result;
+    }
+    /** First page for the current search, with a fresh usage baseline. */
     async function refresh({ preserveStatus = false, forceList = true } = {}) {
       if (busy) {
         refreshQueued = true;
         return;
       }
-      const revision = ++requestRevision;
+      const revision = ++requestRevision,
+        query = $("history-search").value.trim();
       loading = true;
       if (!preserveStatus) setStatus(null);
       render();
       try {
-        const result = await chrome.runtime.sendMessage<
-          unknown,
-          Reply & {
-            entries: RawEntry[];
-            enabled: boolean;
-            limits?: { ttlMs: number };
-          }
-        >({ type: "GET_HISTORY" });
+        const [page, meter] = await Promise.all([
+          request<RecordsReply>({
+            type: "GET_RECORDS",
+            ...(query ? { query } : {}),
+          }),
+          request<UsageReply>({ type: "GET_CACHE_USAGE" }).catch(() => null),
+        ]);
         if (revision !== requestRevision) return;
-        accept(result);
+        validPage(page);
+        ++usageRevision;
+        records = normalizeRecords(page.records);
+        next = cursor(page.next);
+        epoch = page.epoch;
+        activeQuery = query;
+        const counted = acceptUsage(meter);
+        baseline = counted?.epoch === epoch ? counted.records : null;
+        newCount = 0;
+        loaded = true;
       } catch {
         if (revision === requestRevision) setStatus("history.error", true);
       } finally {
@@ -772,6 +833,65 @@ function historyFactory(Core: typeof XGrokCore) {
           render({ forceList });
         }
       }
+    }
+    async function loadMore() {
+      if (busy || loading || !next) return;
+      const revision = ++requestRevision;
+      let stale = false;
+      loading = true;
+      setStatus(null);
+      render();
+      try {
+        const page = validPage(
+          await request<RecordsReply>({
+            type: "GET_RECORDS",
+            after: next,
+            ...(activeQuery ? { query: activeQuery } : {}),
+          }),
+        );
+        if (revision !== requestRevision) return;
+        // A Clear or Delete elsewhere invalidates the cursor's list.
+        if (page.epoch !== epoch) stale = true;
+        else {
+          const known = new Set(records.map((record) => record.id));
+          records = records.concat(
+            normalizeRecords(page.records).filter(
+              (record) => !known.has(record.id),
+            ),
+          );
+          next = cursor(page.next);
+        }
+      } catch {
+        if (revision === requestRevision) setStatus("history.error", true);
+      } finally {
+        if (revision === requestRevision) {
+          loading = false;
+          render({ forceList: true });
+        }
+      }
+      if (stale) await refresh({ preserveStatus: true });
+    }
+    /** Worker notices refresh only the meter and the new-record count; an
+     * epoch change (Clear/Delete) reloads the list. */
+    async function recordsChanged(noticeEpoch?: unknown) {
+      // A running mutation re-reads usage when it settles.
+      if (busy) return;
+      if (loaded && Number.isSafeInteger(noticeEpoch) && noticeEpoch !== epoch)
+        return refresh({ preserveStatus: true, forceList: false });
+      const revision = ++usageRevision;
+      try {
+        const result = acceptUsage(
+          await request<UsageReply>({ type: "GET_CACHE_USAGE" }),
+        );
+        if (!result || revision !== usageRevision) return;
+        if (loaded && result.epoch !== epoch)
+          return refresh({ preserveStatus: true, forceList: false });
+        if (baseline !== null)
+          newCount = Math.max(0, result.records - baseline);
+      } catch {
+        /* The meter keeps its last value; the list is unaffected. */
+      }
+      render();
     }
     async function mutate(
       message: ControlMessage,
@@ -785,74 +905,56 @@ function historyFactory(Core: typeof XGrokCore) {
       setStatus(null);
       render();
       try {
-        const result = await chrome.runtime.sendMessage<
-          unknown,
-          Reply & {
-            entries: RawEntry[];
-            enabled: boolean;
-            limits?: { ttlMs: number };
-          }
-        >(message);
-        accept(result);
-        setStatus(success);
+        const result = await request<Reply & { epoch?: unknown }>(message);
+        if (!result?.ok || !Number.isSafeInteger(result.epoch))
+          throw new Error("Records unavailable");
+        epoch = result.epoch as number;
         if (message.type === "CLEAR_HISTORY") {
-          $("clear-confirmation").hidden = true;
+          records = [];
+          next = null;
+          baseline = 0;
+          newCount = 0;
           expanded.clear();
-          $("history-search").focus();
+          selected.clear();
+          $("clear-confirmation").hidden = true;
+        } else {
+          const id = message.id as string;
+          if (baseline !== null && records.some((record) => record.id === id))
+            baseline = Math.max(0, baseline - 1);
+          records = records.filter((record) => record.id !== id);
+          expanded.delete(id);
+          selected.delete(id);
         }
-        if (message.type === "DELETE_HISTORY") {
-          expanded.delete(message.id as string);
-          $("history-search").focus();
-        }
+        setStatus(success);
+        $("history-search").focus();
       } catch {
         setStatus(error, true);
       } finally {
         busy = false;
         render({ forceList: true });
-        if (refreshQueued) {
-          refreshQueued = false;
-          await refresh({ preserveStatus: true, forceList: false });
-        }
       }
-    }
-    function historyChanged() {
-      if (busy) {
-        refreshQueued = true;
-        return;
-      }
-      if (notificationTimer !== null)
-        environment.clearTimeout?.(notificationTimer);
-      if (!environment.setTimeout) {
-        refresh({ preserveStatus: true, forceList: false });
-        return;
-      }
-      notificationTimer = environment.setTimeout(() => {
-        notificationTimer = null;
-        refresh({ preserveStatus: true, forceList: false });
-      }, 250);
+      if (refreshQueued) {
+        refreshQueued = false;
+        await refresh({ preserveStatus: true, forceList: false });
+      } else await recordsChanged();
     }
     async function start() {
       $("history-search").addEventListener("input", () => {
-        visibleLimit = PAGE_SIZE;
-        render({ forceList: true });
+        if (searchTimer !== null) environment.clearTimeout?.(searchTimer);
+        if (!environment.setTimeout) {
+          void refresh();
+          return;
+        }
+        searchTimer = environment.setTimeout(() => {
+          searchTimer = null;
+          void refresh();
+        }, SEARCH_DELAY);
       });
-      $("more-history").addEventListener("click", () => {
-        visibleLimit += PAGE_SIZE;
-        render({ forceList: true });
-      });
-      $("refresh-history").addEventListener("click", refresh as EventListener);
-      $("history-enabled").addEventListener("change", () =>
-        mutate(
-          {
-            type: "SET_HISTORY_ENABLED",
-            enabled: $("history-enabled").checked,
-          },
-          "history.saved",
-          "history.recordingError",
-        ),
-      );
+      $("more-history").addEventListener("click", () => loadMore());
+      $("new-records").addEventListener("click", () => refresh());
+      $("refresh-history").addEventListener("click", () => refresh());
       $("clear-history").addEventListener("click", () => {
-        if (busy || !loaded || !entries.length) return;
+        if (busy || !loaded) return;
         $("clear-confirmation").hidden = false;
         $("confirm-clear").focus();
       });
@@ -891,7 +993,8 @@ function historyFactory(Core: typeof XGrokCore) {
           );
           render();
         }
-        if (message?.type === "HISTORY_CHANGED") historyChanged();
+        if (message?.type === "HISTORY_CHANGED")
+          void recordsChanged(message.epoch);
       });
       chrome.storage?.onChanged?.addListener((changes, area) => {
         if (area !== "local") return;
@@ -910,15 +1013,9 @@ function historyFactory(Core: typeof XGrokCore) {
           );
           render();
         }
-        // The store key is intentionally not interpreted here; the worker
-        // owns pruning and redaction of persisted history data.
-        if (changes.superxHistory || changes.superxHistoryEnabled)
-          historyChanged();
       });
       environment.addEventListener?.("unload", () => {
-        if (expiryTimer !== null) environment.clearTimeout?.(expiryTimer);
-        if (notificationTimer !== null)
-          environment.clearTimeout?.(notificationTimer);
+        if (searchTimer !== null) environment.clearTimeout?.(searchTimer);
       });
       render();
       const revision = localeRevision,
@@ -929,26 +1026,8 @@ function historyFactory(Core: typeof XGrokCore) {
           try {
             const [local, locale, config] = await Promise.all([
               chrome.storage?.local?.get?.(["uiLanguage"]) || {},
-              chrome.runtime
-                .sendMessage<
-                  unknown,
-                  Reply & {
-                    entries: RawEntry[];
-                    enabled: boolean;
-                    limits?: { ttlMs: number };
-                  }
-                >({ type: "GET_UI_LANGUAGE" })
-                .catch(() => null),
-              chrome.runtime
-                .sendMessage<
-                  unknown,
-                  Reply & {
-                    entries: RawEntry[];
-                    enabled: boolean;
-                    limits?: { ttlMs: number };
-                  }
-                >({ type: "GET_CONFIG" })
-                .catch(() => null),
+              request<Reply>({ type: "GET_UI_LANGUAGE" }).catch(() => null),
+              request<Reply>({ type: "GET_CONFIG" }).catch(() => null),
             ]);
             if (config?.ok && settingsRevision === configRevision)
               settings = core.normalizeSettings(config.settings);
@@ -962,19 +1041,18 @@ function historyFactory(Core: typeof XGrokCore) {
             );
             render();
           } catch {
-            /* History remains usable when the locale lookup fails. */
+            /* Records remain usable when the locale lookup fails. */
           }
         })(),
       ]);
     }
-    return Object.freeze({ start, refresh, render });
+    return Object.freeze({ start, refresh, render, recordsChanged });
   }
   return Object.freeze({
     create,
     safePostUrl,
     safeSourceUrl,
-    filterEntries,
-    normalizeEntries,
+    normalizeRecords,
   });
 }
 

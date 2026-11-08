@@ -64,7 +64,7 @@ test('worker and manifest dependencies load as classic globals in their actual o
  const background=await readFile(join(root,'extension/background.js'),'utf8');
  const imports=background.match(/importScripts\(([^)]+)\)/)[1].match(/"[^"]+"|'[^']+'/g).map(value=>value.slice(1,-1));
  for(const script of imports)vm.runInContext(await readFile(join(root,'extension',script),'utf8'),worker,{filename:script});
- for(const [name,globalName]of Object.entries({'feed-core':'XGrokCore','api-provider':'GrokFirstAPI','native-provider':'SuperXNative','build-acp':'SuperXACP','build-transport':'SuperXBuildTransport','build-provider':'SuperXBuild','build-setup':'SuperXBuildSetup','ui-i18n':'GrokFirstUI','key-store':'SuperXKeyStore','oauth-provider':'SuperXOAuth','history-store':'SuperXHistoryStore'})){
+ for(const [name,globalName]of Object.entries({'feed-core':'XGrokCore','api-provider':'GrokFirstAPI','native-provider':'SuperXNative','build-acp':'SuperXACP','build-transport':'SuperXBuildTransport','build-provider':'SuperXBuild','build-setup':'SuperXBuildSetup','ui-i18n':'GrokFirstUI','key-store':'SuperXKeyStore','oauth-provider':'SuperXOAuth'})){
    assert.equal(typeof worker[globalName],'object',name);
    assert.deepEqual(Object.keys(require(join(root,'extension',name+'.js'))).sort(),Object.keys(worker[globalName]).sort());
  }

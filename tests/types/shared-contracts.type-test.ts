@@ -23,10 +23,7 @@ import type {
   Post as WorkerPost,
   SettingsInput as WorkerSettings,
 } from "../../src/background/worker-types";
-import type {
-  Usage as HistoryUsage,
-  Metadata as HistoryMetadata,
-} from "../../src/background/history-store";
+import type { PostComments } from "../../src/background/post-records";
 import type {
   API as CoreAPI,
   RequestDiagnostics as CoreDiagnostics,
@@ -41,14 +38,10 @@ type PostOwner = Assert<Equal<Post, ProviderPost>>;
 type WorkerPostOwner = Assert<Equal<Post, WorkerPost>>;
 type SettingsOwner = Assert<Equal<SettingsInput, WorkerSettings>>;
 type UsageOwner = Assert<Equal<Usage, ProviderUsage>>;
-type HistoryUsageOwner = Assert<Equal<Usage, HistoryUsage>>;
-type MetadataOwner = Assert<Equal<GenerationMetadata, ProviderMetadata>>;
-type HistoryMetadataOwner = Assert<
-  Equal<
-    HistoryMetadata["usageByStage"],
-    Required<NonNullable<GenerationMetadata["usageByStage"]>> | undefined
-  >
+type RecordUsageOwner = Assert<
+  Equal<Usage, NonNullable<PostComments["commentsUsage"]>>
 >;
+type MetadataOwner = Assert<Equal<GenerationMetadata, ProviderMetadata>>;
 type DiagnosticOwner = Assert<Equal<RequestDiagnostics, CoreDiagnostics>>;
 type SanitizerOutput = Assert<
   Equal<

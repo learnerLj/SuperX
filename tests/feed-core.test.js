@@ -735,7 +735,7 @@ test('every supported UI language contains all labels and preserves interpolatio
 });
 
 class UIElement {
-  constructor(attrs={}) { this.attrs={...attrs};this.children=[];this.dataset={};this.value=attrs.value||'';this.textContent='';this.listeners={}; }
+  constructor(attrs={}) { this.attrs={...attrs};this.children=[];this.dataset={};this.value=attrs.value||'';this.textContent='';this.listeners={};this.style={}; }
   get value() {return this.inputValue;}
   set value(value) {this.inputValue=String(value);}
   getAttribute(name) { return this.attrs[name]??null; }
@@ -859,10 +859,9 @@ function uiPageFixture(file, settings=API_UI_SETTINGS, storage={}, environment={
         }
         if(message.type==='GET_SECURITY_STATUS')return environment.securityFailure?{ok:false,errorKey:'errors.noResponse'}:security();
         if(message.type==='GET_OAUTH_STATUS')return {ok:true,oauthStatus:environment.oauthStatus||{state:'disconnected',connected:false,remember:local.settings.oauthRemember!==false,catalogModels:[]}};
-        if(message.type==='GET_HISTORY_STATUS')return {ok:true,enabled:local.superxHistoryEnabled!==false,count:0,epoch:0};
+        if(message.type==='GET_CACHE_USAGE')return environment.cacheUsage||{ok:true,epoch:0,limitBytes:1024*1024*1024,bytes:0,records:0,answers:0};
         if(message.type==='GET_API_DIAGNOSTICS')return {ok:true,entries:[],retentionHours:24,maxEntries:30};
         if(message.type==='CLEAR_API_DIAGNOSTICS')return {ok:true};
-        if(message.type==='SET_HISTORY_ENABLED') {local.superxHistoryEnabled=message.enabled;return {ok:true,enabled:message.enabled};}
         if(message.type==='OPEN_HISTORY') {openedHistory.push(true);return {ok:true};}
         if(message.type==='GET_BUILD_STATUS')return {ok:true,modelCatalog:[{id:'grok-4.3',efforts:['none','minimal','low','medium','high','xhigh']},{id:'grok-4.7',efforts:['minimal','low','medium','high','xhigh']}],...environment.buildStatus || {installed:false,available:false,ready:false}};
         if(message.type==='GET_BUILD_CONNECTION')return {ok:true,configured:buildConfigured,port:local.settings.buildPort};
@@ -898,7 +897,7 @@ function uiPageFixture(file, settings=API_UI_SETTINGS, storage={}, environment={
   return {document,ids,messages,reads,runtimeListeners,storageListeners,local,session,openedOptions,openedHistory,permissionRequests,location,pageListeners};
 }
 const settleUI=()=>new Promise(resolve=>setImmediate(resolve));
-const uiMessageTypes=fixture=>fixture.messages.map(message=>message.type).filter(type=>!['GET_SECURITY_STATUS','GET_CONFIG','GET_HISTORY_STATUS','GET_BUILD_CONNECTION','GET_OAUTH_STATUS'].includes(type));
+const uiMessageTypes=fixture=>fixture.messages.map(message=>message.type).filter(type=>!['GET_SECURITY_STATUS','GET_CONFIG','GET_CACHE_USAGE','GET_BUILD_CONNECTION','GET_OAUTH_STATUS'].includes(type));
 const promptEditorId=name=>({postDraft:'post-draft-prompt',replyDraft:'reply-draft-prompt'}[name]||`${name}-prompt`);
 
 test('Settings model and reasoning controls are required dropdowns with model-specific choices',async()=>{
@@ -1050,6 +1049,24 @@ test('Settings history is a direct page link and popup still opens history witho
   assert.equal(Boolean(fixture.ids.get('history').disabled),false);
   await fixture.ids.get('history').listeners.click();assert.deepEqual(fixture.openedHistory,[true]);
   assert.equal(fixture.messages.some(message=>['SAVE_KEY','SAVE_SETTINGS','ANALYZE','GENERATE_COMMENTS'].includes(message.type)),false);
+});
+
+test('Settings cache section shows the colored record storage meter and refreshes it on worker notices',async()=>{
+  const MB=1024*1024;let usage={ok:true,epoch:0,limitBytes:1024*MB,bytes:973*MB,records:1234,answers:2000};
+  const fixture=uiPageFixture('options',API_UI_SETTINGS,{},{onMessage:message=>message.type==='GET_CACHE_USAGE'?usage:undefined});
+  await settleUI();await settleUI();
+  const {ids}=fixture,meter=ids.get('cache-usage-meter');
+  assert.equal(meter.getAttribute('role'),'meter');assert.equal(ids.get('cache-usage').hidden,false);
+  assert.equal(meter.getAttribute('aria-valuenow'),'95');assert.equal(meter.dataset.level,'danger');assert.equal(ids.get('cache-usage-fill').style.width,'95%');
+  assert.equal(ids.get('cache-usage-text').textContent,'Used 973 MB / 1,024 MB · 1,234 records');assert.equal(meter.getAttribute('aria-valuetext'),ids.get('cache-usage-text').textContent);
+  assert.equal(ids.get('cache-usage-hint').hidden,false);
+  assert.match(fs.readFileSync(path.join(__dirname,'../extension/options.html'),'utf8'),/id="cache-usage-hint"[^>]*>.*data-i18n="history.usageHint".*href="#answer-cache-limit"/);
+  usage={...usage,bytes:512*MB,records:10};
+  fixture.runtimeListeners.forEach(listener=>listener({type:'HISTORY_CHANGED',epoch:0}));await settleUI();
+  assert.equal(meter.getAttribute('aria-valuenow'),'50');assert.equal(meter.dataset.level,'success');assert.equal(ids.get('cache-usage-hint').hidden,true);
+  fixture.runtimeListeners.forEach(listener=>listener({type:'UI_LANGUAGE_CHANGED',language:'zh-CN'}));await settleUI();
+  assert.equal(ids.get('cache-usage-text').textContent,'已用 512 MB / 1,024 MB · 10 条记录');
+  assert.equal(fixture.messages.filter(message=>message.type==='GET_CACHE_USAGE').length,2);
 });
 
 test('fresh options and popup use browser UI locale without writing credentials or analysis settings', async () => {
@@ -2110,7 +2127,7 @@ test('direct-client and security labels are supplied distinctly in twelve langua
     assert.ok(Object.keys(ui.catalog[locale]).every(key=>!key.toLowerCase().includes('consent')),locale);
     assert.ok(Object.values(ui.catalog[locale]).every(value=>!value.includes('ZDR')),locale);
   }
-  assert.match(ui.t('options.cacheHelp','en'),/keeping browsing history/);
+  assert.match(ui.t('options.cacheHelp','en'),/fact-check records/);assert.doesNotMatch(ui.t('options.cacheHelp','en'),/browsing history/);
 });
 
 test('provider switching preserves credential drafts and Build saves without sending a Key',async()=>{

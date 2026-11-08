@@ -18,7 +18,6 @@ import type {
   Client,
   Subscription,
   Job,
-  HistoryTicket,
   ErrorExtra,
   OutboundMessage,
   StorageSnapshot,
@@ -29,10 +28,7 @@ import type {
   CachePartition,
 } from "./worker-types";
 import type { BuildConnection, PublicError } from "../shared/contracts";
-import type {
-  Response as HistoryResponse,
-  Status as HistoryStatus,
-} from "./history-store";
+import type { CacheRecord, RecordCursor } from "./answer-cache";
 /* SuperX: credentials and provider calls stay in the extension worker. */
 importScripts(
   "feed-core.js",
@@ -45,7 +41,6 @@ importScripts(
   "ui-i18n.js",
   "key-store.js",
   "oauth-provider.js",
-  "history-store.js",
   "answer-cache.js",
   "provider-registry.js",
 );
@@ -64,7 +59,12 @@ const answers = SuperXAnswerCache.create({ indexedDB: globalThis.indexedDB });
 let answerCacheReady = false;
 const answerPending = new Map<string, Promise<unknown>>();
 let answerClearBarrier = Promise.resolve();
-const history = SuperXHistoryStore.create(chrome.storage.local);
+// Fact-check records live in the answer cache. The epoch only tells feeds and
+// the records page that a clear or delete happened; it is not persisted.
+let historyEpoch = 0,
+  recordsNotice: ReturnType<typeof setTimeout> | undefined;
+const LEGACY_HISTORY_KEYS = ["superxHistory", "superxHistoryEnabled"];
+// Kept for the hourly diagnostics cleanup registered by earlier versions.
 const HISTORY_ALARM = "SUPERX_HISTORY_CLEANUP";
 const clients = new Set<Client>();
 let clientSequence = 0;
@@ -312,16 +312,13 @@ async function initialize() {
   // Remember the preference separately; existing session-only keys stay in session storage.
   if (typeof local.rememberApiKey !== "boolean")
     await chrome.storage.local.set({ rememberApiKey });
-  // History has its own storage queue. A failed cleanup cannot block Key restore
-  // or paid work, and no credential is passed to this store.
-  void history
-    .prune()
-    .then(() => broadcastHistoryConfig())
-    .catch(() => {});
+  // The v2 backfill and the one-time history import run in the background
+  // write queue; they never block Key restore or paid work.
+  void maintainRecords();
   try {
     await chrome.alarms?.create(HISTORY_ALARM, { periodInMinutes: 60 });
   } catch {
-    /* Reads and writes still remove expired records. */
+    /* Diagnostics are also pruned on read. */
   }
 }
 function validKey(value: unknown): value is string {
@@ -401,11 +398,9 @@ function onOAuthChanged() {
       }
     }
     cacheEpoch++;
-    void queueAnswerWrite(() =>
-      answers.removeProvider("oauth", identity),
-    ).catch(() => {});
-    if (settings?.provider === "oauth")
-      void history.invalidateResults?.().catch(() => {});
+    void queueAnswerWrite(() => answers.removeProvider("oauth", identity))
+      .then(() => notifyRecordsChanged())
+      .catch(() => {});
   }
   // Device codes and the official authorization URL go only to extension UI.
   // Content scripts receive only oauthFeedStatus(), never the device challenge.
@@ -432,39 +427,105 @@ function selectedEffort(value: Settings) {
         ? value.buildReasoningEffort
         : Core.reasoningEffort(value.apiModel, value.apiReasoningEffort);
 }
-function historyScope(value: Settings = settings) {
+function recordScope(value: Settings = settings) {
   return value.provider === "oauth"
     ? "oauth:" +
         (value.oauthCredentialId || oauth.status().credentialId || "signed-out")
     : value.provider;
 }
-function scopedHistory(result: HistoryResponse | HistoryStatus) {
-  const scope = historyScope();
+/** Records show every source and account; only the default version follows
+ * the current settings. Cache keys, credentials and prompts stay here. */
+function recordAnswer(entry: CacheRecord, index: number) {
+  const value = entry.value,
+    meta = SuperXAnswerCache.keyMetadata(entry.key),
+    provider = SuperXAnswerCache.provider(value?.provider) ?? meta.provider;
   return {
-    ...result,
-    entries: (
-      (result as HistoryStatus & Partial<Pick<HistoryResponse, "entries">>)
-        .entries || []
-    ).map((value) => {
-      const entry = { ...value };
-      if (
-        entry.analysis &&
-        (scope === "x-native" || (entry.analysis.scope || "api") !== scope)
-      )
-        delete entry.analysis;
-      if (scope === "x-native" || (entry.commentsScope || "api") !== scope)
-        for (const field of [
-          "comments",
-          "commentsScope",
-          "commentsLanguage",
-          "commentsModel",
-          "commentsUsage",
-          "commentsCompletedAt",
-        ] as const)
-          delete entry[field];
-      return entry;
-    }),
+    index,
+    provider: provider || "",
+    // OAuth accounts are opaque IDs: a short prefix distinguishes them.
+    account: meta.account
+      ? provider === "oauth"
+        ? meta.account.slice(0, 8)
+        : meta.account.slice(0, 80)
+      : "",
+    model:
+      (typeof value?.model === "string" ? value.model : "") || meta.model || "",
+    language: meta.language || "",
+    completedAt: typeof value?.completedAt === "number" ? value.completedAt : 0,
+    text: typeof value?.text === "string" ? value.text : "",
+    sources: Array.isArray(value?.sources) ? value.sources.slice(0, 30) : [],
+    verificationStatus:
+      typeof value?.verificationStatus === "string"
+        ? value.verificationStatus
+        : "",
+    ...(Number.isSafeInteger(value?.verificationStart)
+      ? { verificationStart: value.verificationStart }
+      : {}),
+    ...(value?.usage && typeof value.usage === "object"
+      ? { usage: value.usage }
+      : {}),
+    usageComplete: value?.usageComplete === true,
+    score:
+      (provider === settings.provider ? 4 : 0) +
+      (meta.model && meta.model === currentModel() ? 2 : 0) +
+      (meta.account &&
+      meta.account ===
+        (settings.provider === "oauth"
+          ? oauth.status().credentialId
+          : settings.provider === "x-native"
+            ? settings.nativeAccount
+            : "")
+        ? 1
+        : 0),
   };
+}
+function currentModel() {
+  return settings.provider === "x-native"
+    ? "fast"
+    : settings.provider === "oauth"
+      ? settings.oauthModel
+      : settings.provider === "build"
+        ? settings.buildModel
+        : settings.apiModel;
+}
+function recordDTO(item: {
+  post: import("./answer-cache").PostRecord;
+  answers: CacheRecord[];
+}) {
+  const { post } = item,
+    versions = item.answers.map(recordAnswer);
+  // Answers are newest first; the closest match to the current settings wins.
+  let preferred = 0;
+  for (const version of versions)
+    if (version.score > versions[preferred]!.score) preferred = version.index;
+  return {
+    id: post.id,
+    url: post.url,
+    hasSnapshot: typeof post.text === "string",
+    text: post.text || "",
+    author: post.author || "",
+    activityAt: post.activityAt,
+    preferred,
+    answers: versions.map(({ score, ...version }) => version),
+    comments: post.comments || [],
+    ...(post.comments?.length
+      ? {
+          commentsCompletedAt: post.commentsCompletedAt,
+          commentsScope: post.commentsScope || "",
+          commentsModel: post.commentsModel || "",
+        }
+      : {}),
+  };
+}
+function recordCursor(value: unknown): RecordCursor | undefined | null {
+  if (value === undefined || value === null) return undefined;
+  return Array.isArray(value) &&
+    value.length === 2 &&
+    Number.isFinite(value[0]) &&
+    typeof value[1] === "string" &&
+    /^\d{1,25}$/.test(value[1])
+    ? [value[0] as number, value[1]]
+    : null;
 }
 function validBuildSecret(value: unknown): value is string {
   return (
@@ -637,6 +698,7 @@ function queueBuildConnection(message: WorkerMessage, clear = false) {
         );
         cacheEpoch++;
         await queueAnswerWrite(() => answers.removeProvider("build"));
+        notifyRecordsChanged();
         await persistCache(cacheEpoch);
       } catch {
         failure = buildStorageError();
@@ -839,7 +901,6 @@ async function publicConfig() {
   )
     credentialReady = validKey(session.apiKey);
   const status = securityStatus();
-  const historyConfig = history.config();
   if (settings.provider === "build") ensureBuildStatus();
   return {
     settings,
@@ -861,64 +922,52 @@ async function publicConfig() {
       configured: validBuildSecret(buildSecret),
       port: settings.buildPort,
     },
-    historyEnabled: historyConfig.enabled,
-    historyEpoch: historyConfig.epoch,
+    historyEpoch,
   };
 }
-async function notifyHistoryChanged() {
-  await chrome.runtime
-    .sendMessage({ type: "HISTORY_CHANGED", ...history.config() })
-    .catch(() => {});
+/** Feeds keep the visit/ack protocol; recording is always on (R1). */
+function historyConfig() {
+  return { enabled: true, epoch: historyEpoch };
 }
-async function broadcastHistoryConfig() {
-  const config = history.config();
+/** Trailing 1 s throttle: open records/settings pages refresh their meter. */
+function notifyRecordsChanged() {
+  if (recordsNotice !== undefined) return;
+  recordsNotice = setTimeout(() => {
+    recordsNotice = undefined;
+    void chrome.runtime
+      .sendMessage({ type: "HISTORY_CHANGED", epoch: historyEpoch })
+      .catch(() => {});
+  }, 1000);
+}
+/** Clear and single delete are the only epoch changes. */
+function advanceHistoryEpoch() {
+  historyEpoch++;
   for (const client of clients)
-    send(client.port, { type: "HISTORY_CONFIG", ...config });
-  await notifyHistoryChanged();
+    send(client.port, { type: "HISTORY_CONFIG", ...historyConfig() });
+  notifyRecordsChanged();
 }
-function historyTicket(post: Post, snapshot: Settings = settings) {
-  if (snapshot.provider === "x-native") return null;
-  const scope = historyScope(snapshot),
-    capturedRevision = revision;
-  return history
-    .capture(post.id)
-    .then((ticket) => ({ ticket, scope, revision: capturedRevision }))
-    .catch(() => null);
-}
-function rememberHistoryResult(
-  ticket: HistoryTicket,
-  result: Result,
-  comments = false,
-  language = "",
-) {
-  if (
-    !comments &&
-    Core.readerOutput(result?.text, { final: true }).kind !== "content"
-  )
-    return;
-  void Promise.resolve(ticket)
-    .then((value) => {
-      if (
-        !value ||
-        value.scope === "x-native" ||
-        value.revision !== revision ||
-        value.scope !== historyScope()
-      )
-        return;
-      return comments
-        ? history.comments(value.ticket, {
-            ...result,
-            language,
-            scope: value.scope,
-          })
-        : history.analysis(value.ticket, {
-            ...result,
-            language,
-            scope: value.scope,
-          });
-    })
-    .then(() => notifyHistoryChanged())
-    .catch(() => {});
+/** v2 backfill in resumable batches, then the one-time history import. */
+async function maintainRecords() {
+  try {
+    while (!(await queueAnswerWrite(() => answers.backfill()))) {}
+    const saved = await chrome.storage.local.get(LEGACY_HISTORY_KEYS);
+    if (!LEGACY_HISTORY_KEYS.some((key) => Object.hasOwn(saved, key))) return;
+    const epoch = cacheEpoch;
+    const status = await queueAnswerWrite(() =>
+      epoch === cacheEpoch
+        ? answers.migrateHistory(
+            saved.superxHistory,
+            Date.now(),
+            answerBudget(),
+          )
+        : "pending",
+    );
+    if (status !== "done") return;
+    await chrome.storage.local.remove(LEGACY_HISTORY_KEYS);
+    notifyRecordsChanged();
+  } catch {
+    /* Old data stays in place; the next worker start retries. */
+  }
 }
 async function broadcastConfig() {
   const config = await publicConfig();
@@ -1733,7 +1782,12 @@ function saveAnswer(job: Job, result: Result, epoch: number) {
       !jobAudienceActive(job)
     )
       return;
-    return answers.put(job.fingerprint!, result, answerBudget());
+    return answers
+      .put(job.fingerprint!, result, answerBudget(), job.post)
+      .then((stored) => {
+        if (stored) notifyRecordsChanged();
+        return stored;
+      });
   });
   answerPending.set(job.fingerprint, pending);
   void pending
@@ -1743,9 +1797,34 @@ function saveAnswer(job: Job, result: Result, epoch: number) {
         answerPending.delete(job.fingerprint!);
     });
 }
+/** Comment drafts are written to the post record (R5: broadcast on success). */
+function saveComments(job: Job, result: Result, epoch: number) {
+  if (!Array.isArray(result.comments) || !result.comments.length) return;
+  // The write queue orders this after any earlier clear; the epoch rejects a
+  // result whose clear was requested after it started.
+  void queueAnswerWrite(async () => {
+    if (epoch !== cacheEpoch || job.controller.signal.aborted) return;
+    const stored = await answers.putComments(
+      job.post,
+      {
+        comments: result.comments,
+        completedAt: result.completedAt,
+        language: job.recordLanguage,
+        scope: recordScope(job.settings),
+        model: result.model,
+        usage: result.usage,
+      },
+      answerBudget(),
+      Date.now(),
+    );
+    if (stored) notifyRecordsChanged();
+  }).catch(() => {});
+}
+/** Clearing the cache clears every fact-check record (both stores). */
 function clearStoredCache() {
   cache = {};
   cacheEpoch++;
+  advanceHistoryEpoch();
   answerClearBarrier = queueAnswerWrite(async () => {
     const results = await Promise.allSettled([
       answers.clear(),
@@ -1756,6 +1835,35 @@ function clearStoredCache() {
     if (failed) throw failed.reason;
   }) as Promise<void>;
   return answerClearBarrier;
+}
+/** A Key change drops only API answers; other sources' records stay. */
+function dropApiAnswers() {
+  for (const key of Object.keys(cache)) {
+    try {
+      if (JSON.parse(key)[1] === "api") delete cache[key];
+    } catch {
+      delete cache[key];
+    }
+  }
+  cacheEpoch++;
+}
+function clearApiCache() {
+  dropApiAnswers();
+  const epoch = cacheEpoch;
+  answerClearBarrier = queueAnswerWrite(async () => {
+    const results = await Promise.allSettled([
+      answers.removeProvider("api"),
+      chrome.storage.session.remove("cache"),
+      chrome.storage.local.remove("cache"),
+    ]);
+    notifyRecordsChanged();
+    const failed = results.find((value) => value.status === "rejected");
+    if (failed) throw failed.reason;
+  }) as Promise<void>;
+  return answerClearBarrier.then(() => {
+    // Other sources' session entries survive; write them back if any remain.
+    if (Object.keys(cache).length) return persistCache(epoch);
+  });
 }
 function persistRailStates() {
   railStateWrites = railStateWrites
@@ -2208,46 +2316,23 @@ chrome.runtime.onConnect.addListener((port) => {
           return;
         }
         if (message.type === "HISTORY_VISIT") {
-          // No Key, provider call or dwell timer is required to record visibility.
-          // Epochs reject batches sent before Clear/Delete/recording changes.
+          // Records are created only by generated answers and comments, so a
+          // visit stores nothing. The acknowledgement protocol stays: a stale
+          // epoch, a paused SuperX or a malformed batch is refused, while any
+          // other batch is acknowledged so feeds never retry it forever.
           if (!trustedFeed(port.sender)) return;
-          const batchId = String(message.batchId || "").slice(0, 80),
-            ack = (ok: boolean) => {
-              if (batchId)
-                send(port, {
-                  type: "HISTORY_ACK",
-                  batchId,
-                  ok,
-                  epoch: history.config().epoch,
-                });
-            };
-          if (
-            !settings.enabled ||
-            !Array.isArray(message.posts) ||
-            message.posts.length > 30 ||
-            message.historyEpoch !== history.config().epoch
-          ) {
-            ack(false);
-            return;
-          }
-          const posts: Post[] = [];
-          for (const raw of message.posts as unknown[]) {
-            try {
-              posts.push(sanitizePost(raw));
-            } catch {
-              /* An invalid record cannot make a trusted batch fail. */
-            }
-          }
-          try {
-            const status = await history.visit(posts, message.historyEpoch);
-            ack(
-              status.enabled &&
-                message.historyEpoch === status.epoch &&
-                posts.length > 0,
-            );
-          } catch {
-            ack(false); /* History failure never affects the analysis queue. */
-          }
+          const batchId = String(message.batchId || "").slice(0, 80);
+          if (batchId)
+            send(port, {
+              type: "HISTORY_ACK",
+              batchId,
+              ok:
+                settings.enabled &&
+                Array.isArray(message.posts) &&
+                message.posts.length <= 30 &&
+                message.historyEpoch === historyEpoch,
+              epoch: historyEpoch,
+            });
           return;
         }
         if (message.type === "SET_ENABLED") {
@@ -2464,10 +2549,9 @@ chrome.runtime.onConnect.addListener((port) => {
           : comments
             ? commentCacheKey(post, snapshot, inputFingerprint, analysis)
             : cacheKey(post, snapshot, inputFingerprint);
-        const ticket = draft ? null : historyTicket(post, snapshot),
-          historyLanguage = draft
-            ? ""
-            : Core.resolvePostLanguage(snapshot.language, post);
+        const recordLanguage = draft
+          ? ""
+          : Core.resolvePostLanguage(snapshot.language, post);
         const resumeAdmission = () => {
           if (
             !clients.has(client) ||
@@ -2544,8 +2628,7 @@ chrome.runtime.onConnect.addListener((port) => {
           settings: snapshot,
           revision: receivedRevision,
           fingerprint,
-          historyTicket: ticket,
-          historyLanguage,
+          recordLanguage,
           started: false,
           retryAttempts: 0,
           completedBilling: [],
@@ -2583,7 +2666,6 @@ chrome.runtime.onConnect.addListener((port) => {
           return;
         }
         if (cached && !job.force) {
-          rememberHistoryResult(ticket, cached, comments, historyLanguage);
           sendJob(
             job,
             comments
@@ -3204,13 +3286,6 @@ async function executeJob(job: Job) {
     releaseAPISlot(job);
     pump();
     result.completedAt = Date.now();
-    if (!draftJob(job))
-      rememberHistoryResult(
-        job.historyTicket,
-        result,
-        commentsJob(job),
-        job.historyLanguage,
-      );
     if (
       !draftJob(job) &&
       epoch === cacheEpoch &&
@@ -3218,6 +3293,7 @@ async function executeJob(job: Job) {
     ) {
       if (!commentsJob(job)) saveAnswer(job, result, epoch);
       else {
+        saveComments(job, result, epoch);
         cache[job.fingerprint!] = result;
         cache = pruneCache(cache);
         // Display a completed answer immediately. Optional serialized cache I/O
@@ -3392,13 +3468,6 @@ async function executeJob(job: Job) {
               errorCode: "API_CAPACITY",
             })
           : undefined;
-      if (partialResult && !draftJob(job))
-        rememberHistoryResult(
-          job.historyTicket,
-          { ...partialResult, completedAt: Date.now() },
-          false,
-          job.historyLanguage,
-        );
       rememberAPIDiagnostics(
         job,
         {
@@ -3477,13 +3546,6 @@ async function executeJob(job: Job) {
               job.settings.apiVerification,
             )
           : undefined;
-      if (partialResult && !draftJob(job))
-        rememberHistoryResult(
-          job.historyTicket,
-          { ...partialResult, completedAt: Date.now() },
-          false,
-          job.historyLanguage,
-        );
       const metadata = {
         ...billing,
         ...(timedOut && !commentsJob(job)
@@ -3726,8 +3788,7 @@ function queueSecurityMutation(message: SecurityMutation) {
       abortJob(job);
     pauseReset = clearQueuePause("api");
   }
-  cache = {};
-  cacheEpoch++;
+  dropApiAnswers();
   // Invalidate at receipt, before asynchronous storage or settings changes.
   void ready.then(() => broadcastConfig()).catch(() => {});
   const operation = securityWrites
@@ -3738,7 +3799,7 @@ function queueSecurityMutation(message: SecurityMutation) {
       let failure: { ok: boolean; errorKey: string } | undefined;
       try {
         try {
-          await clearStoredCache();
+          await clearApiCache();
         } catch (error) {
           failure = securityError();
         }
@@ -3802,7 +3863,6 @@ async function saveSettings(input: unknown) {
       // Invalidate even a login still waiting for credential restoration. The
       // manager cancels pending starts while keeping a connected session intact.
       oauthActionGeneration++;
-      await history.invalidateResults?.();
       const state = oauth.status();
       if (
         oauthPendingLogins ||
@@ -3818,9 +3878,9 @@ async function saveSettings(input: unknown) {
     settings = next;
     providerFault = false;
     if (capacityChanged)
-      await queueAnswerWrite(() => answers.trim(answerBudget())).catch(
-        () => {},
-      );
+      await queueAnswerWrite(() => answers.trim(answerBudget()))
+        .then(() => notifyRecordsChanged())
+        .catch(() => {});
     removePausedAutomaticJobs();
     if (cancelsJobs) {
       await clearQueuePause();
@@ -3909,9 +3969,9 @@ async function handleOAuthMessage(
       }
     }
     cacheEpoch++;
-    await queueAnswerWrite(() => answers.removeProvider("oauth")).catch(
-      () => {},
-    );
+    await queueAnswerWrite(() => answers.removeProvider("oauth"))
+      .then(() => notifyRecordsChanged())
+      .catch(() => {});
     await persistCache(cacheEpoch).catch(() => {});
   } else if (message.type === "OAUTH_SET_REMEMBER")
     state = await oauth.setRemember(message.remember);
@@ -4123,41 +4183,57 @@ chrome.runtime.onMessage.addListener((input: unknown, sender, respond) => {
     }
     if (message.type === "GET_API_DIAGNOSTICS") return getAPIDiagnostics();
     if (message.type === "CLEAR_API_DIAGNOSTICS") return clearAPIDiagnostics();
-    if (
-      message.type === "GET_HISTORY" ||
-      message.type === "GET_HISTORY_STATUS"
-    ) {
+    if (message.type === "GET_RECORDS") {
+      const after = recordCursor(message.after),
+        query = typeof message.query === "string" ? message.query : "";
+      if (after === null || query.length > 200)
+        return { ok: false, errorKey: "history.storageError" };
+      // A read started after Clear waits for it, so it never shows old records.
+      const epoch = historyEpoch;
+      await answerClearBarrier.catch(() => {});
       try {
-        const result =
-          await history[message.type === "GET_HISTORY" ? "get" : "status"]();
+        const page = await answers.records({ after, query });
+        answerCacheReady = true;
         return {
           ok: true,
-          ...(message.type === "GET_HISTORY" ? scopedHistory(result) : result),
+          epoch,
+          records: page.items.map(recordDTO),
+          next: page.next,
         };
       } catch {
         return { ok: false, errorKey: "history.storageError" };
       }
     }
-    if (
-      ["CLEAR_HISTORY", "DELETE_HISTORY", "SET_HISTORY_ENABLED"].includes(
-        message.type,
-      )
-    ) {
-      if (
-        (message.type === "DELETE_HISTORY" &&
-          !/^\d{1,25}$/.test(String(message.id || ""))) ||
-        (message.type === "SET_HISTORY_ENABLED" &&
-          typeof message.enabled !== "boolean")
-      )
+    if (message.type === "GET_CACHE_USAGE") {
+      await answerClearBarrier.catch(() => {});
+      try {
+        return {
+          ok: true,
+          epoch: historyEpoch,
+          limitBytes: answerBudget(),
+          ...(await answers.usage()),
+        };
+      } catch {
+        return { ok: false, errorKey: "history.storageError" };
+      }
+    }
+    if (message.type === "CLEAR_HISTORY") {
+      try {
+        await clearStoredCache();
+        return { ok: true, epoch: historyEpoch };
+      } catch {
+        return { ok: false, errorKey: "history.storageError" };
+      }
+    }
+    if (message.type === "DELETE_HISTORY") {
+      const id = String(message.id || "");
+      if (!/^\d{1,25}$/.test(id))
         return { ok: false, errorKey: "history.storageError" };
       try {
-        const result = await (message.type === "CLEAR_HISTORY"
-          ? history.clear()
-          : message.type === "DELETE_HISTORY"
-            ? history.delete(message.id)
-            : history.setEnabled(message.enabled as boolean));
-        await broadcastHistoryConfig();
-        return { ok: true, ...scopedHistory(result) };
+        await answerClearBarrier.catch(() => {});
+        await queueAnswerWrite(() => answers.deletePost(id));
+        advanceHistoryEpoch();
+        return { ok: true, epoch: historyEpoch };
       } catch {
         return { ok: false, errorKey: "history.storageError" };
       }
@@ -4178,10 +4254,6 @@ chrome.alarms?.onAlarm.addListener((alarm) => {
   if (Object.values(SuperXOAuth.ALARMS || {}).includes(alarm.name))
     void ready.then(() => oauth.handleAlarm(alarm)).catch(() => {});
   if (alarm.name === HISTORY_ALARM) {
-    void ready
-      .then(() => history.prune())
-      .then(() => notifyHistoryChanged())
-      .catch(() => {});
     void ready.then(() => pruneStoredAPIDiagnostics()).catch(() => {});
   }
 });
