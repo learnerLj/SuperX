@@ -993,6 +993,17 @@ test('a manual check of a never-visited post creates a record with its snapshot,
   assert.equal((await records(bg)).records[0].answers.length,1,'a cache hit adds no version');await assertRecordBytes(bg);
 });
 
+test('saving an API Key removes only API records and keeps other sources',async()=>{
+  let source='oauth';const bg=createBackground({settings:{provider:'oauth'},oauthState:oauthConnected(),apiRun:async()=>({text:'Checked by '+source,provider:source,sources:[],verificationStatus:'completed'})});await bg.ready();const port=bg.connect();await until(()=>port.messages.some(m=>m.type==='CONFIG'));
+  assert.equal((await analyze(bg,port,'oauth-record',200)).type,'RESULT');await until(async()=>(await records(bg)).records.length===1);
+  source='api';assert.equal((await bg.message({type:'SAVE_SETTINGS',settings:{...bg.local.data.settings,provider:'api'}})).ok,true);
+  assert.equal((await analyze(bg,port,'api-record',201)).type,'RESULT');await until(async()=>(await records(bg)).records.length===2);
+  assert.equal((await bg.message({type:'SAVE_KEY',apiKey:'replacement-key-fixture',remember:false})).ok,true);
+  await until(async()=>(await records(bg)).records.length===1);const [kept]=(await records(bg)).records;
+  assert.equal(kept.id,'200');assert.deepEqual(kept.answers.map(a=>a.provider),['oauth']);await assertRecordBytes(bg);
+  assert.equal((await bg.message({type:'GET_CACHE_USAGE'})).records,1);
+});
+
 test('a successful prefetch creates a record, but failures and paused SuperX do not',async()=>{
   const bg=createBackground();await bg.ready();const port=bg.connect();await until(()=>port.messages.some(m=>m.type==='CONFIG'));
   assert.equal((await analyze(bg,port,'prefetched',120,{prefetch:true})).type,'RESULT');await until(async()=>(await records(bg)).records.length===1);

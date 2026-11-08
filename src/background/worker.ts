@@ -1836,6 +1836,35 @@ function clearStoredCache() {
   }) as Promise<void>;
   return answerClearBarrier;
 }
+/** A Key change drops only API answers; other sources' records stay. */
+function dropApiAnswers() {
+  for (const key of Object.keys(cache)) {
+    try {
+      if (JSON.parse(key)[1] === "api") delete cache[key];
+    } catch {
+      delete cache[key];
+    }
+  }
+  cacheEpoch++;
+}
+function clearApiCache() {
+  dropApiAnswers();
+  const epoch = cacheEpoch;
+  answerClearBarrier = queueAnswerWrite(async () => {
+    const results = await Promise.allSettled([
+      answers.removeProvider("api"),
+      chrome.storage.session.remove("cache"),
+      chrome.storage.local.remove("cache"),
+    ]);
+    notifyRecordsChanged();
+    const failed = results.find((value) => value.status === "rejected");
+    if (failed) throw failed.reason;
+  }) as Promise<void>;
+  return answerClearBarrier.then(() => {
+    // Other sources' session entries survive; write them back if any remain.
+    if (Object.keys(cache).length) return persistCache(epoch);
+  });
+}
 function persistRailStates() {
   railStateWrites = railStateWrites
     .catch(() => {})
@@ -3759,8 +3788,7 @@ function queueSecurityMutation(message: SecurityMutation) {
       abortJob(job);
     pauseReset = clearQueuePause("api");
   }
-  cache = {};
-  cacheEpoch++;
+  dropApiAnswers();
   // Invalidate at receipt, before asynchronous storage or settings changes.
   void ready.then(() => broadcastConfig()).catch(() => {});
   const operation = securityWrites
@@ -3771,7 +3799,7 @@ function queueSecurityMutation(message: SecurityMutation) {
       let failure: { ok: boolean; errorKey: string } | undefined;
       try {
         try {
-          await clearStoredCache();
+          await clearApiCache();
         } catch (error) {
           failure = securityError();
         }
