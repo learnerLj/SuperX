@@ -371,6 +371,16 @@ test('an inline composer pauses automatic analysis until focus leaves',()=>{
   assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,1);
 });
 
+test('a focused composer preserves an explicit comment request',()=>{
+  const page=fixture({postCount:1});page.configure({dwellMs:1000});
+  const composer=page.document.createElement('div');composer.setAttribute('contenteditable','true');composer.setAttribute('data-testid','tweetTextarea_0');page.primary.append(composer);
+  page.cards()[0].testShadow.querySelector('.generate-comments').emit('click');page.flush();
+  const comments=page.port.sent.find(message=>message.type==='GENERATE_COMMENTS');assert.ok(comments);
+  page.document.activeElement=composer;page.tick();
+  assert.equal(page.port.sent.some(message=>message.type==='CANCEL_IF_QUEUED'&&message.requestId===comments.requestId),false);
+  assert.equal(page.cards()[0].testShadow.querySelector('.generate-comments').disabled,true);
+});
+
 test('X modal detection covers portal ARIA, alert dialogs, open native dialogs and media sheets',()=>{
   for(const options of [{role:'alertdialog'},{role:'',ariaModal:true},{role:'',tag:'dialog'},{role:'',testId:'sheetDialog'},{role:'',testId:'swipe-to-dismiss'}]){
     const page=fixture({postCount:1});page.configure();const {portal}=xModal(page,options);page.mutate([{type:'childList',target:page.document.body}]);const overlay=page.nodes.find(node=>node.id==='grokfirst-overlay');assert.equal(overlay.hidden,true,JSON.stringify(options));
