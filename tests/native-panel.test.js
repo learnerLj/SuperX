@@ -27,6 +27,12 @@ test('raw RUN preserves prompt and never writes the editor or clicks Send/New Ch
  h.api('UPDATE',{text:'**Finding**',sources:[]});h.api('RESULT',{text:'**Finding**',sources:[]});await until(()=>h.sent.some(m=>m.kind==='RESULT'));
  assert.deepEqual(h.clicks,{open:1,collapse:1,send:0,stop:0,fresh:0});assert.equal(h.attrs.has('inert'),false);assert.equal(h.doc.activeElement,h.reply);assert.equal(h.reply.value,'User draft');assert.equal(h.reply.selectionStart,2);assert.equal(h.listenerCount(),0);
 });
+test('a focused composer defers opening the owned panel until editing stops',async()=>{
+ const h=fixture();let composing=true;h.reply.closest=selector=>composing&&/contenteditable|textarea|input|textbox/.test(selector)?h.reply:null;
+ h.run();await sleep(150);assert.equal(h.clicks.open,0);assert.equal(h.messages.some(m=>m.type==='PREPARE'),true);
+ composing=false;await until(()=>h.messages.some(m=>m.type==='RUN'));assert.equal(h.clicks.open,1);
+ h.api('RESULT',{text:'Done',sources:[]});await until(()=>h.sent.some(m=>m.kind==='RESULT'));assert.equal(h.doc.activeElement,h.reply);assert.equal(h.reply.selectionStart,2);
+});
 test('bridge events require exact source, origin, channel, direction and nonce',async()=>{
  const h=fixture();h.run();await until(()=>h.messages.some(m=>m.type==='RUN'));
  for(const overrides of [{source:{}},{origin:'https://evil.example'},{data:{channel:'WRONG',direction:'FROM_API',nonce:'nonce',kind:'RESULT'}},{data:{channel:CHANNEL,direction:'TO_API',nonce:'nonce',kind:'RESULT'}}])h.api('RESULT',{text:'Wrong'},'nonce',overrides);
