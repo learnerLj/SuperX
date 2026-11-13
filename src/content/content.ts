@@ -2880,6 +2880,17 @@ import type {
       search.contains(document.activeElement),
     );
   }
+  function editingFocus() {
+    const active = document.activeElement as HTMLElement | null;
+    return Boolean(
+      active &&
+      active !== document.body &&
+      !overlay.contains(active) &&
+      active.closest?.(
+        'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"], [role="textbox"]',
+      ),
+    );
+  }
   document.addEventListener("focusin", scheduleLayout, true);
   document.addEventListener("focusout", scheduleLayout, true);
   function searchHeaderGeometry(
@@ -3757,6 +3768,13 @@ import type {
       resetDwellWaits();
       return;
     }
+    // Automatic work must not open X's native Grok drawer or re-render a
+    // composer while the user is typing. Withdraw only work that has not
+    // started; blur restarts the normal dwell window.
+    if (editingFocus()) {
+      pauseUnseenRailQueue();
+      return;
+    }
     if (currentRailBounds().hidden) {
       pauseUnseenRailQueue();
       return;
@@ -3977,6 +3995,7 @@ import type {
     manual = false,
   ) {
     if (!force && !manual && !automaticEntry(entry)) return;
+    if (!force && !manual && editingFocus()) return;
     if (
       (force || manual) &&
       afterWake(entry, "analysis", () => submit(entry, force, prefetch, manual))

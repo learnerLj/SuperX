@@ -362,6 +362,15 @@ test('a visible X composer hides the entire SuperX hit area and restores a fresh
   page.elapse(999);assert.equal(page.port.sent.some(message=>message.type==='ANALYZE'),false);page.elapse(1);assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,1);assert.deepEqual(page.writes,[]);
 });
 
+test('an inline composer pauses automatic analysis until focus leaves',()=>{
+  const page=fixture({postCount:1});page.configure({dwellMs:1000});
+  const composer=page.document.createElement('div');composer.setAttribute('contenteditable','true');composer.setAttribute('data-testid','tweetTextarea_0');page.primary.append(composer);
+  page.document.activeElement=composer;page.intersect();page.elapse(5000);page.tick();
+  assert.equal(page.port.sent.some(message=>message.type==='ANALYZE'),false);
+  page.document.activeElement=page.document.body;page.tick();page.elapse(1000);page.tick();
+  assert.equal(page.port.sent.filter(message=>message.type==='ANALYZE').length,1);
+});
+
 test('X modal detection covers portal ARIA, alert dialogs, open native dialogs and media sheets',()=>{
   for(const options of [{role:'alertdialog'},{role:'',ariaModal:true},{role:'',tag:'dialog'},{role:'',testId:'sheetDialog'},{role:'',testId:'swipe-to-dismiss'}]){
     const page=fixture({postCount:1});page.configure();const {portal}=xModal(page,options);page.mutate([{type:'childList',target:page.document.body}]);const overlay=page.nodes.find(node=>node.id==='grokfirst-overlay');assert.equal(overlay.hidden,true,JSON.stringify(options));

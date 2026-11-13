@@ -111,6 +111,12 @@ export interface API {
     root.querySelector<HTMLElement & { value?: string }>(
       '[contenteditable="true"][role="textbox"][data-lexical-editor="true"]',
     );
+  const EDITING =
+    'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"], [role="textbox"]';
+  const editing = (doc: Document) => {
+    const active = doc.activeElement as HTMLElement | null;
+    return Boolean(active && active !== doc.body && active.closest?.(EDITING));
+  };
   const generating = (root: HTMLElement) =>
     Boolean(
       root.querySelector(
@@ -153,6 +159,14 @@ export interface API {
       stage?: string,
       detail?: FailureDetail,
     ): Failure => ({ code, stage, ...(detail ? { detail } : {}) });
+    async function waitForEditingIdle(task: Task) {
+      const until = Date.now() + 5000;
+      while (live(task) && !task.cancelled && editing(doc)) {
+        if (Date.now() >= until)
+          throw error("X_NATIVE_INTERRUPTED", "panel-entry");
+        await delay(100);
+      }
+    }
     const isOpen = (task: Task) =>
       Boolean(task.root?.isConnected && panel(doc) === task.root);
     function nativeNode(task: Task, node: Node | null) {
@@ -416,6 +430,8 @@ export interface API {
       doc.documentElement.setAttribute("data-superx-native-running", "");
       doc.documentElement.append(task.style);
       post(task, "PREPARE");
+      await waitForEditingIdle(task);
+      if (!live(task) || task.cancelled) return;
       task.opener = await wait(
         task,
         () => doc.querySelector<HTMLButtonElement>(OPENER),
