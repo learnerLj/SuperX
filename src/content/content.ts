@@ -3026,16 +3026,21 @@ import type {
       { preferredWidth: customRailWidth },
     );
   }
-  function pauseUnseenRailQueue({ preserveStarted = false } = {}) {
+  function pauseUnseenRailQueue({
+    preserveStarted = false,
+    analysisOnly = false,
+  } = {}) {
     // No room for the result means no new paid work. Preserve requests whose
     // START has arrived, and only cancel work that is still waiting to begin.
+    // Editing pauses analyze scheduling without touching explicit comments.
     cancelDwellTimer();
     queue.clear();
     for (const entry of allEntries()) {
       entry.pending = false;
       entry.since = 0;
     }
-    for (const [id, request] of requests)
+    for (const [id, request] of requests) {
+      if (analysisOnly && request.task !== "analysis") continue;
       if (
         request.task === "comments"
           ? ["queued", "retry-wait"].includes(request.entry.commentStatus)
@@ -3065,6 +3070,7 @@ import type {
           }!,
         );
       }
+    }
   }
   function positionCards() {
     syncNativeAccount();
@@ -3772,7 +3778,7 @@ import type {
     // composer while the user is typing. Withdraw only work that has not
     // started; blur restarts the normal dwell window.
     if (editingFocus()) {
-      pauseUnseenRailQueue();
+      pauseUnseenRailQueue({ analysisOnly: true });
       return;
     }
     if (currentRailBounds().hidden) {
