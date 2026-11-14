@@ -38,8 +38,8 @@ Model access, allowance and charges depend on your selected service and account.
 
 See [connection setup](docs/CONNECTIONS.md) for other providers and [Contributing](CONTRIBUTING.md) for development and build instructions.
 
-## Thanks
+## Scope
 
-This project builds on [bwjoke/SuperX](https://github.com/bwjoke/SuperX). Thank you to the upstream author and all contributors.
+This is a personal build: it is built from this repository and loaded locally as an unpacked extension. It is not published to the Chrome Web Store and does not track or merge upstream changes; the upstream project is credited as the code's origin.
 
 [MIT License](LICENSE)

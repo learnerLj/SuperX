@@ -38,8 +38,8 @@ npm run build
 
 其他连接方式见[连接说明](docs/CONNECTIONS.md)，开发与构建见[贡献指南](CONTRIBUTING.md)。
 
-## 致谢
+## 说明
 
-本项目基于 [bwjoke/SuperX](https://github.com/bwjoke/SuperX) 继续改进，感谢上游作者及所有贡献者。
+这是个人自用分支：只从本仓库源码构建，并以「加载已解压的扩展程序」方式在本地使用。不发布 Chrome Web Store，不追踪或合并上游更新；上游代码仅作为项目来源致谢。
 
 [MIT License](LICENSE)
